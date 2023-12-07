@@ -1,0 +1,1481 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-08-21"
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+source(here::here("scripts", "01_data_preprocessing.R"))
+library(circlize)
+library(ComplexHeatmap)
+```
+
+# No Filter {visibility="hidden"}
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt")]
+
+se <- annotate_rrbs(se)
+
+meth <- getMeth(se, type = "raw")
+rownames(meth) <- mcols(se)$chr_base
+
+cov <- getCoverage(se, type = "Cov")
+rownames(cov) <- mcols(se)$chr_base
+```
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### No filter applied
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,500,25), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\[", replacement = "") %>% 
+    gsub(pattern = "\\)|\\]", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  bins[colblock > 500] <- "500+"
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(cov, ncol = 1)
+freq_bins <- blockApply(cov, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2') %>%
+  mutate(bins = factor(bins, levels = unique(bins)[order(unique(parse_number(as.character(bins))))]))
+
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### No filter applied
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,1,.1), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\)", replacement = "") %>% 
+    gsub(pattern = "\\]|\\[", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(meth, ncol = 1)
+freq_bins <- blockApply(meth, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2')
+  
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+# Filter: Max coverage Inf, Min coverage 30, Percent coverage 75% {visibility="hidden"}
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt")]
+
+se <- filter_rrbs(se, min_coverage = 30, max_coverage = Inf, percent_coverage = .75, nblocks = 20, workers = 40, cpg_select = "all", progressbar = FALSE)
+
+meth <- getMeth(se, type = "raw")
+rownames(meth) <- mcols(se)$chr_base
+
+cov <- getCoverage(se, type = "Cov")
+rownames(cov) <- mcols(se)$chr_base
+```
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage Inf; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,500,25), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\[", replacement = "") %>% 
+    gsub(pattern = "\\)|\\]", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  bins[colblock > 500] <- "500+"
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(cov, ncol = 1)
+freq_bins <- blockApply(cov, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2') %>%
+  mutate(bins = factor(bins, levels = unique(bins)[order(unique(parse_number(as.character(bins))))]))
+
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage Inf; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,1,.1), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\)", replacement = "") %>% 
+    gsub(pattern = "\\]|\\[", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(meth, ncol = 1)
+freq_bins <- blockApply(meth, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2')
+  
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+# Filter: Max coverage 500, Min coverage 30, Percent coverage 75% {visibility="hidden"}
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt")]
+
+se <- filter_rrbs(se, min_coverage = 30, max_coverage = 500, percent_coverage = .75, nblocks = 20, workers = 40, cpg_select = "all", progressbar = FALSE)
+
+meth <- getMeth(se, type = "raw")
+rownames(meth) <- mcols(se)$chr_base
+
+cov <- getCoverage(se, type = "Cov")
+rownames(cov) <- mcols(se)$chr_base
+```
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage 500; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,500,25), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\[", replacement = "") %>% 
+    gsub(pattern = "\\)|\\]", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  bins[colblock > 500] <- "500+"
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(cov, ncol = 1)
+freq_bins <- blockApply(cov, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2') %>%
+  mutate(bins = factor(bins, levels = unique(bins)[order(unique(parse_number(as.character(bins))))]))
+
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage 500; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,1,.1), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\)", replacement = "") %>% 
+    gsub(pattern = "\\]|\\[", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+#beachmat colBlock doesnt actually apply to each column individually so I need to specify a grid
+grid <- colAutoGrid(meth, ncol = 1)
+freq_bins <- blockApply(meth, FUN = fun, grid = grid, BPPARAM = BiocParallel::MulticoreParam(workers = 12))
+
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2')
+  
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  ylab("log10 Freq") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+# Filter: Max coverage Inf, Min coverage 30, Percent coverage 75%; Age-selected sites {visibility="hidden"}
+
+```{r, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt")]
+
+granges <- readRDS(here::here('results/rds/18/granges_spl_max_cov_Inf.rds'))
+se <- IRanges::subsetByOverlaps(se, granges)
+granges <- readRDS(here::here("results/rds/20/granges_spl_4_max_cov_Inf.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+
+se <- annotate_rrbs(se)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+rownames(meth) <- mcols(se)$chr_base 
+
+cov <- getCoverage(se, type = "Cov") %>% as.matrix()
+rownames(cov) <- mcols(se)$chr_base
+
+pca <- PCAtools::pca(meth[!rowAnyNAs(meth),], metadata = colData(se))
+```
+
+```{r, include = FALSE}
+se2 <- SummarizedExperiment(assays = list(meth = meth, cov = cov), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se))
+```
+
+# Age-selected sites
+
+## PCA of `r prettyNum(nrow(pca$loadings), big.mark = ",", scientific = FALSE)` loci {style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+
+```{r}
+p <- plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 600,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                        
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(pca$loadings), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+
+p <- colorbar(p, len = 0.2, thickness = 20)
+
+p
+```
+
+### PCA Corplot {style="font-size: 8px;"}
+
+```{r}
+ggplotly(pcacorplot(pca, 
+                    components = 1:10, 
+                    metavars = c("batch", "age", "microbiome", "strain")))
+```
+:::
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,500,25), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\[", replacement = "") %>% 
+    gsub(pattern = "\\)|\\]", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  bins[colblock > 500] <- "500+"
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+freq_bins <- apply(cov, 2, FUN = fun)
+names(freq_bins) <- colnames(meth)
+
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2') %>%
+  mutate(bins = factor(bins, levels = unique(bins)[order(unique(parse_number(as.character(bins))))]))
+
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### Coverage {style="font-size: 8px;"}
+```{r}
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Coverage: top 10% sites contributing to PC2 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC2",drop=FALSE]) %>% arrange(desc(PC2))
+top_loadings_PC2 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC2),], 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Coverage: top 10% sites contributing to PC3 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC3",drop=FALSE]) %>% arrange(desc(PC3))
+top_loadings_PC3 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC3),], 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,1,.1), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\)", replacement = "") %>% 
+    gsub(pattern = "\\]|\\[", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+freq_bins <- apply(meth, 2, FUN = fun)
+df <- reshape2::melt(freq_bins) %>% rename(bins = Var1, Freq = value)
+  
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### Methylation {style="font-size: 8px;"}
+```{r}
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Methylation: top 10% sites contributing to PC2 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC2",drop=FALSE]) %>% arrange(desc(PC2))
+top_loadings_PC2 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC2),], 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Methylation: top 10% sites contributing to PC3 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC3",drop=FALSE]) %>% arrange(desc(PC3))
+top_loadings_PC3 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC3),], 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: Inf; Min coverage: 30; Percent coverage: 75%
+
+::: r-stack
+::: fragment
+```{r, fig.width=10,fig.height=10, out.height="50%"}
+se_subset <- subset(se, chr_base %in% rownames(top_loadings_PC2))
+row_split <- as.data.frame(mcols(se_subset)[, "type", drop = FALSE])
+
+col_fun <- colorRamp2(c(min(colData(se_subset)$age), 
+                              max(colData(se_subset)$age)), 
+                            c("snow", "blue"))
+
+color_mapping <- list(
+  strain = c(
+    "129svev" = "gray",
+    "c57bl6" = "black"
+  ),
+  microbiome = c(
+    "gf" = "lightblue",
+    "wt" = "darkred"
+  ),
+  age = col_fun
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se_subset)[, c(
+    "strain",
+    "microbiome",
+    "age"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    strain = list(
+      nrow = 1
+    ),
+    age = list(
+      direction = "horizontal"
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC2), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+
+draw(ht, heatmap_legend_side = "bot", annotation_legend_side = "bot", column_title = "Top 10% of loadings in PC2")
+```
+:::
+
+::: fragment
+```{r, out.height="50%"}
+se_subset <- subset(se, chr_base %in% rownames(top_loadings_PC3))
+row_split <- as.data.frame(mcols(se_subset)[, "type", drop = FALSE])
+
+col_fun <- colorRamp2(c(min(colData(se_subset)$age), 
+                              max(colData(se_subset)$age)), 
+                            c("snow", "blue"))
+
+color_mapping <- list(
+  strain = c(
+    "129svev" = "gray",
+    "c57bl6" = "black"
+  ),
+  microbiome = c(
+    "gf" = "lightblue",
+    "wt" = "darkred"
+  ),
+  age = col_fun
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se_subset)[, c(
+    "strain",
+    "microbiome",
+    "age"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    strain = list(
+      nrow = 1
+    ),
+    age = list(
+      direction = "horizontal"
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC3), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+
+draw(ht, heatmap_legend_side = "bot", annotation_legend_side = "bot", column_title = "Top 10% of loadings in PC3")
+```
+:::
+:::
+
+# Filter: Max coverage 500, Min coverage 30, Percent coverage 75%; Age-selected sites {visibility="hidden"}
+
+```{r, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt")]
+
+granges <- readRDS(here::here('results/rds/18/granges_spl_max_cov_500.rds'))
+se <- IRanges::subsetByOverlaps(se, granges)
+granges <- readRDS(here::here("results/rds/20/granges_spl_4_max_cov_500.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+
+se <- annotate_rrbs(se)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+rownames(meth) <- mcols(se)$chr_base 
+
+cov <- getCoverage(se, type = "Cov") %>% as.matrix()
+rownames(cov) <- mcols(se)$chr_base
+
+pca <- PCAtools::pca(meth[!rowAnyNAs(meth),], metadata = colData(se))
+```
+
+```{r, include = FALSE}
+se2 <- SummarizedExperiment(assays = list(meth = meth, cov = cov), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se))
+```
+
+## PCA of `r prettyNum(nrow(pca$loadings), big.mark = ",", scientific = FALSE)` loci {style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+```{r}
+p <- plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 600,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                        
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(pca$loadings), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+
+p <- colorbar(p, len = 0.2, thickness = 20)
+
+p
+```
+
+### PCA Corplot {style="font-size: 8px;"}
+```{r}
+ggplotly(pcacorplot(pca, 
+                    components = 1:10, 
+                    metavars = c("batch", "age", "microbiome", "strain")))
+```
+:::
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,500,25), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\[", replacement = "") %>% 
+    gsub(pattern = "\\)|\\]", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  bins[colblock > 500] <- "500+"
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+freq_bins <- apply(cov, 2, FUN = fun)
+names(freq_bins) <- colnames(meth)
+df <- purrr::map_df(freq_bins, as.data.frame, .id = 'Var2') %>%
+  mutate(bins = factor(bins, levels = unique(bins)[order(unique(parse_number(as.character(bins))))]))
+
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Coverage of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### Coverage {style="font-size: 8px;"}
+```{r}
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Coverage: top 10% sites contributing to PC2 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC2",drop=FALSE]) %>% arrange(desc(PC2))
+top_loadings_PC2 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC2),], 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Coverage: top 10% sites contributing to PC3 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC3",drop=FALSE]) %>% arrange(desc(PC3))
+top_loadings_PC3 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC3),], 
+                           assay_name = "cov", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = cov,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+```{r, include=FALSE}
+fun <- function(colblock){
+  bins <- cut(colblock, breaks = seq(0,1,.1), right = FALSE, include.lowest = TRUE) %>%
+    gsub(pattern = "\\(|\\)", replacement = "") %>% 
+    gsub(pattern = "\\]|\\[", replacement = "") %>%
+    gsub(pattern = ",", replacement = "-")
+  
+  freq_bins <- table(bins)
+  return(freq_bins)
+}
+
+freq_bins <- apply(meth, 2, FUN = fun)
+df <- reshape2::melt(freq_bins) %>% rename(bins = Var1, Freq = value)
+  
+p <- ggplot(df, mapping = aes(x = bins, y = Freq)) +
+  geom_bar(stat = "identity") +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 8)
+  )
+```
+
+::: r-stack
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 1)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 2)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 4)
+```
+:::
+
+::: fragment
+```{r}
+p + ggforce::facet_wrap_paginate(~Var2, nrow = 3, ncol = 4, page = 5)
+```
+:::
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+::: panel-tabset
+### Methylation {style="font-size: 8px;"}
+```{r}
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Methylation: top 10% sites contributing to PC2 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC2",drop=FALSE]) %>% arrange(desc(PC2))
+top_loadings_PC2 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC2),], 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+
+### Methylation: top 10% sites contributing to PC3 {style="font-size: 8px;"}
+```{r}
+o <- abs(pca$loadings[,"PC3",drop=FALSE]) %>% arrange(desc(PC3))
+top_loadings_PC3 <- o[1:(nrow(o)*.10),,drop = FALSE]
+
+
+meltedse <- mia::meltAssay(se2[rownames(top_loadings_PC3),], 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            "sp_4970"=expression(bold("sp_4970")),
+                            "sp_4965"=expression(bold("sp_4965")),
+                            parse=TRUE))
+```
+:::
+
+## Methylation of `r prettyNum(nrow(se), big.mark = ",", scientific = FALSE)` age-selected loci in spleen samples {auto-animate=true style="font-size: 20px;"}
+
+#### Max coverage: 500; Min coverage: 30; Percent coverage: 75%
+
+::: r-stack
+::: fragment
+```{r, fig.width=10,fig.height=10, out.width="50%"}
+se_subset <- subset(se, chr_base %in% rownames(top_loadings_PC2))
+row_split <- as.data.frame(mcols(se_subset)[, "type", drop = FALSE])
+
+col_fun <- colorRamp2(c(min(colData(se_subset)$age), 
+                              max(colData(se_subset)$age)), 
+                            c("snow", "blue"))
+
+color_mapping <- list(
+  strain = c(
+    "129svev" = "gray",
+    "c57bl6" = "black"
+  ),
+  microbiome = c(
+    "gf" = "lightblue",
+    "wt" = "darkred"
+  ),
+  age = col_fun
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se_subset)[, c(
+    "strain",
+    "microbiome",
+    "age"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    strain = list(
+      nrow = 1
+    ),
+    age = list(
+      direction = "horizontal"
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC2), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+
+draw(ht, heatmap_legend_side = "bot", annotation_legend_side = "bot", column_title = "Top 10% of loadings in PC2")
+```
+:::
+
+::: fragment
+```{r, fig.width=10,fig.height=10, out.width="50%"}
+se_subset <- subset(se, chr_base %in% rownames(top_loadings_PC3))
+row_split <- as.data.frame(mcols(se_subset)[, "type", drop = FALSE])
+
+col_fun <- colorRamp2(c(min(colData(se_subset)$age), 
+                              max(colData(se_subset)$age)), 
+                            c("snow", "blue"))
+
+color_mapping <- list(
+  strain = c(
+    "129svev" = "gray",
+    "c57bl6" = "black"
+  ),
+  microbiome = c(
+    "gf" = "lightblue",
+    "wt" = "darkred"
+  ),
+  age = col_fun
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se_subset)[, c(
+    "strain",
+    "microbiome",
+    "age"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    strain = list(
+      nrow = 1
+    ),
+    age = list(
+      direction = "horizontal"
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC3), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+
+draw(ht, heatmap_legend_side = "bot", annotation_legend_side = "bot", column_title = "Top 10% of loadings in PC3")
+```
+:::
+:::
+
+## Supplementary Data {style="font-size: 20px;"}
+
+```{r}
+gt::gt(as.data.frame(colData(se)[,names(colData(se)) %noin% c("filename", "epi")])) %>%
+  gt::opt_interactive(
+    use_search = TRUE,
+    use_filters = TRUE,
+    use_resizers = TRUE,
+    use_highlight = TRUE,
+    use_compact_mode = TRUE,
+    use_text_wrapping = FALSE,
+    use_page_size_select = TRUE
+  )
+```

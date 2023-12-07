@@ -1,0 +1,276 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-08-14"
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+bibliography: references.bib
+---
+
+```{r setup, include=FALSE}
+source(here::here("scripts", "01_data_preprocessing.R"))
+library(circlize)
+library(ComplexHeatmap)
+```
+
+```{r, include=FALSE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","microbiome_se"))
+se <- se[,se$batch == "2023_07_03"]
+se <- filter_rrbs(se, percent_coverage = .75, min_coverage = 30, workers = 40, nblocks = 20)
+conv_stats <- read_tsv(here("data/metadata/compiled_bs_conversion.tsv")) %>% 
+  rename(sample_id = Sample_Name)
+
+meth <- getMeth(se, type = "raw") %>% realize_Parallel(workers = 40, nblocks = 20)
+meth[is.nan(meth)] <- NA
+rownames(meth) <- mcols(se)$chr_base
+cov <- getCoverage(se, type = "Cov") %>% realize_Parallel(workers = 40, nblocks = 20)
+rownames(cov) <- mcols(se)$chr_base
+
+md <- merge(colData(se), conv_stats, by = "sample_id")
+rownames(md) <- md$sample_id
+md <- md[colnames(meth),]
+
+pca <- PCAtools::pca(mat = meth[!matrixStats::rowAnyNAs(meth),], metadata = md)
+
+prcomp <- prcompPCAtools(pca)
+```
+
+```{r}
+microbiome_sampletype <- interaction(pca$metadata$microbiome,pca$metadata$sampletype, sep = "-")
+perc_meth_cpg <- pca$metadata$Percent_Methylated_CpG
+ggplot(pca$rotated, mapping = aes(x = pca$rotated$PC1, 
+                                  y = pca$rotated$PC2, 
+                                  color = perc_meth_cpg, 
+                                  shape = microbiome_sampletype)) + 
+  geom_point() + labs(color='% methylated cpg',
+                      shape = "microbiome-sampletype") +
+  xlab(paste0("PC1 ", round(pca$variance[["PC1"]], 2), "%")) +
+  ylab(paste0("PC2 ", round(pca$variance[["PC2"]], 2), "%")) +
+  geom_text(aes(label = c("DM_9001")), size = 4)
+  
+```
+
+```{r}
+p <- plot_ly(
+  data = pca$rotated,
+  x = ~PC1, y = ~PC2, z = ~PC3,
+  height = 600,
+  text = paste(
+    rownames(pca$metadata),
+    pca$metadata$microbiome,
+    pca$metadata$sampletype,
+    pca$metadata$Percent_Methylated_CpG
+  ),
+  marker = list(
+    color = pca$metadata$Percent_Methylated_CpG,
+    colorscale = "Jet",
+    colorbar = list(
+      title = "%",
+      y = 1, x = 0, len = 0.5
+    )
+  )
+) %>%
+  layout(
+    title = list(text = paste0(
+      "PCA using ", nrow(meth), " sites",
+      "<br>",
+      "<sup>",
+      "Colored by % methylated CpG",
+      "</sup>"
+    )),
+    subtitle = "Colored by % Methylated CpG",
+    scene = list(
+      xaxis = list(title = paste0("PC1 ", round(pca$variance[["PC1"]], 2), "%")),
+      yaxis = list(title = paste0("PC2 ", round(pca$variance[["PC2"]], 2), "%")),
+      zaxis = list(title = paste0("PC3 ", round(pca$variance[["PC3"]], 2), "%"))
+    )
+  )
+
+p
+```
+
+```{r}
+o <- abs(pca$loadings[,"PC1",drop=FALSE]) %>% arrange(desc(PC1))
+top_loadings_PC1 <- o[1:(nrow(o)/200),,drop = FALSE]
+
+o <- abs(pca$loadings[,"PC2",drop=FALSE]) %>% arrange(desc(PC2))
+top_loadings_PC2 <- o[1:(nrow(o)/200),,drop = FALSE]
+
+se2 <- SummarizedExperiment(assays = list(meth = meth[rownames(top_loadings),], 
+                                          cov = cov[rownames(top_loadings),]), 
+                            colData = colData(subset(se, chr_base %in% rownames(top_loadings))),
+                            rowRanges = rowRanges(subset(se, chr_base %in% rownames(top_loadings))))
+
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(
+  data = meltedse,
+  mapping = aes(
+    x = sample_id,
+    y = meth,
+    color = sampletype,
+    group = FeatureID
+  )
+) +
+  geom_line(alpha = .25) +
+  coriell::theme_coriell() +
+  theme(
+    axis.title.x = element_blank(),
+    axis.text.x = element_text(size = 12)
+  )
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("DM_9229"=expression(bold("DM_9229")), 
+                            "DM_9001"=expression(bold("DM_9001")),
+                            parse=TRUE))
+```
+
+```{r}
+row_split <- as.data.frame(mcols(subset(se, chr_base %in% rownames(top_loadings_PC1)))[, "type", drop = FALSE])
+
+color_mapping <- list(
+  sampletype = c(
+    "normal" = "gray",
+    "tumor" = "black"
+  ),
+  microbiome = c(
+    "gf" = "green",
+    "consortium" = "red",
+    "consortium_um149" = "lightblue"
+  )
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se)[, c(
+    "sampletype",
+    "microbiome"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    sampletype = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht1 <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC1), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  left_annotation = row_ha,
+  show_row_names = FALSE,
+  column_title = "PC1",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+```
+
+
+```{r}
+row_split <- as.data.frame(mcols(subset(se, chr_base %in% rownames(top_loadings_PC2)))[, "type", drop = FALSE])
+
+color_mapping <- list(
+  sampletype = c(
+    "normal" = "gray",
+    "tumor" = "black"
+  ),
+  microbiome = c(
+    "gf" = "green",
+    "consortium" = "red",
+    "consortium_um149" = "lightblue"
+  )
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se)[, c(
+    "sampletype",
+    "microbiome"
+  )],
+  col = color_mapping,
+  annotation_legend_param = list(
+    microbiome = list(
+      nrow = 1
+    ),
+    sampletype = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht2 <- ComplexHeatmap::Heatmap(meth[rownames(top_loadings_PC2), ],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  column_title = "PC2",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+```
+
+```{r}
+ht_list <- ht1 + ht2
+
+draw(ht_list, heatmap_legend_side = "bot", annotation_legend_side = "bot", column_title = "Top 0.5% of loadings in PCA")
+```
+

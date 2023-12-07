@@ -1,0 +1,339 @@
+---
+title: "Meeting Presentation"
+author: Anthony Pompetti
+date: "2023-05-30"
+date-format: long
+cache: true
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, echo=FALSE, include=FALSE, cache=TRUE}
+library(glmnet)
+library(caret)
+library(ComplexHeatmap)
+library(circlize)
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+```{r meth_cgi, cache=TRUE, echo=FALSE, include=FALSE}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+age_sites <- readRDS(here("results/rds/age_sites.rds"))
+
+#filter for colon samples
+se <- se[,se$organ == "COL" & se$microbiome %in% c("gf", "wt")]
+
+#filter for aging sites
+se <- subsetByOverlaps(se, age_sites)
+
+#filter for coverage/variance
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "cgi", progressbar = FALSE)
+
+#realize meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 6, nblocks = 3)
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+meth_cgi <- meth
+
+#get only the wt samples 
+meth_wt <- t(meth[,se$microbiome == "wt"])
+#get only the gf samples
+meth_gf <- t(meth[,se$microbiome == "gf"])
+
+age_wt <- colData(se[,se$microbiome == "wt"])$age
+age_gf <- colData(se[,se$microbiome == "gf"])$age
+```
+
+```{r wt_fit_cgi, echo=FALSE, include=FALSE}
+set.seed(123)
+lambda_seq <- 10^seq(2, -2, by = -.1)
+#fit on wt
+fit <- glmnet::cv.glmnet(meth_wt, age_wt, alpha = 0)
+
+#predict wt age using fit that was trained on wt
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on wt
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt),rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_wt <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+```{r gf_fit_cgi, echo=FALSE, include=FALSE}
+#fit on gf
+fit <- glmnet::cv.glmnet(meth_gf, age_gf, alpha = 0)
+
+#predict wt age using fit that was trained on gf
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on gf
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt), rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_gf <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+## Data Filter Summary
+- Data was filtered for WT and GF samples derived from Colon samples
+  - Selected CpGs belonging to the aging sites provided by Himani
+  - Selected CpG Islands
+  - Filtered for coverage and variance
+  
+```{r}
+se
+```
+
+## Heatmap of CpG Islands
+```{r heatmap_cgi, echo = FALSE}
+col_fun = colorRamp2(c(0, 24), c("snow", "red"))
+top_ha = HeatmapAnnotation(
+  batch = colData(se)$batch,
+  sampletype = colData(se)$sampletype,
+  suborgan = colData(se)$suborgan,
+  strain = colData(se)$strain,
+  microbiome = colData(se)$microbiome,
+  age = colData(se)$age,
+  annotation_name_side = "left",
+  annotation_height = unit(2, "mm"),
+  annotation_legend_param = list(batch = list(title = "batch", direction = "horizontal"),
+                                 sampletype = list(title = "sampletype", direction = "horizontal"),
+                                 suborgan = list(title = "suborgan", direction = "horizontal"),
+                                 strain = list(title = "strain", direction = "horizontal"),
+                                 age = list(title = "age", direction = "horizontal", at = c(0,12,24)),
+                                 microbiome = list(title = "microbiome", direction = "horizontal")),
+  show_legend = c("batch" = TRUE,
+                  "sampletype" = TRUE,
+                  "suborgan" = TRUE,
+                  "strain" = TRUE,
+                  "age" = TRUE,
+                  "microbiome" = TRUE),
+  col = list(strain = c("129svev" = "orange4",
+                        "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                        "c57bl6" = "lavender"),
+             age = col_fun,
+             microbiome = c("gf" = "black", 
+                            "wt" = "yellow")))
+
+col_fun <- colorRamp2(c(0, 0.5, 1), c('dodgerblue4', 'snow', 'gold'))
+
+htcgi = Heatmap(meth,
+             name = "mat", col = col_fun, top_annotation = top_ha, show_column_names = FALSE)
+draw(htcgi, annotation_legend_side = "bottom")
+```
+
+## Ridge Regression Summary
+- Performed Ridge Regression
+  - Fitting on WT and predicting on WT & GF
+  - Fitting on GF and predicting on WT & GF
+
+## CpG Islands
+::: {.panel-tabset}
+## Trained on WT
+```{r plot_fit_cgi_wt, echo=FALSE}
+ggplotly(p_wt)
+```
+
+## Trained on GF
+```{r plot_fit_cgi_gf, echo=FALSE}
+ggplotly(p_gf)
+```
+:::
+
+```{r meth_noncgi, cache=TRUE, echo=FALSE, include=FALSE}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+age_sites <- readRDS(here("results/rds/age_sites.rds"))
+
+#filter for colon samples
+se <- se[,se$organ == "COL" & se$microbiome %in% c("gf", "wt")]
+
+#filter for aging sites
+se <- subsetByOverlaps(se, age_sites)
+
+#filter for coverage/variance
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "noncgi", progressbar = FALSE)
+
+#realize meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 6, nblocks = 3)
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+#get only the wt samples 
+meth_wt <- t(meth[,se$microbiome == "wt"])
+#get only the gf samples
+meth_gf <- t(meth[,se$microbiome == "gf"])
+
+age_wt <- colData(se[,se$microbiome == "wt"])$age
+age_gf <- colData(se[,se$microbiome == "gf"])$age
+```
+
+```{r wt_fit_noncgi, echo=FALSE, include=FALSE}
+set.seed(123)
+lambda_seq <- 10^seq(2, -2, by = -.1)
+#fit on wt
+fit <- glmnet::cv.glmnet(meth_wt, age_wt, alpha = 0)
+
+#predict wt age using fit that was trained on wt
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on wt
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt),rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_wt <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age", title = "Ridge Regression: Fitted on wt samples") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+```{r gf_fit_noncgi, echo=FALSE, include=FALSE}
+#fit on gf
+fit <- glmnet::cv.glmnet(meth_gf, age_gf, alpha = 0)
+
+#predict wt age using fit that was trained on gf
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on gf
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt), rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_gf <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age", title = "Ridge Regression: Fitted on gf samples") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+## Data Filter Summary
+- Data was filtered for WT and GF samples derived from Colon samples
+  - Selected CpGs belonging to the aging sites provided by Himani
+  - Selected Non CpG Islands
+  - Filtered for coverage and variance
+  
+```{r}
+se
+```
+
+## Heatmap of Non CpG Islands
+```{r heatmap_noncgi, echo = FALSE}
+col_fun = colorRamp2(c(0, 24), c("snow", "red"))
+top_ha = HeatmapAnnotation(
+  batch = colData(se)$batch,
+  sampletype = colData(se)$sampletype,
+  suborgan = colData(se)$suborgan,
+  strain = colData(se)$strain,
+  microbiome = colData(se)$microbiome,
+  age = colData(se)$age,
+  annotation_name_side = "left",
+  annotation_height = unit(2, "mm"),
+  annotation_legend_param = list(batch = list(title = "batch", direction = "horizontal"),
+                                 sampletype = list(title = "sampletype", direction = "horizontal"),
+                                 suborgan = list(title = "suborgan", direction = "horizontal"),
+                                 strain = list(title = "strain", direction = "horizontal"),
+                                 age = list(title = "age", direction = "horizontal", at = c(0,12,24)),
+                                 microbiome = list(title = "microbiome", direction = "horizontal")),
+  show_legend = c("batch" = TRUE,
+                  "sampletype" = TRUE,
+                  "suborgan" = TRUE,
+                  "strain" = TRUE,
+                  "age" = TRUE,
+                  "microbiome" = TRUE),
+  col = list(batch = c("2020_gf_pilot" = "red", 
+                       "2021_08_26" = "blue", 
+                       "2022_06_01" = "green", 
+                       "GEO" = "purple"),
+             sampletype = c("normal" = "tan",
+                            "pure_epi" = "lightblue",
+                            "stem" = "gold"),
+             suborgan = c("DCOL" = "gray",
+                          "PCOL" = "orange",
+                          "COL" = "darkgreen"),
+             strain = c("129svev" = "orange4",
+                        "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                        "c57bl6" = "lavender"),
+             age = col_fun,
+             microbiome = c("gf" = "black", 
+                            "wt" = "yellow")))
+
+col_fun <- colorRamp2(c(0, 0.5, 1), c('dodgerblue4', 'snow', 'gold'))
+
+htnoncgi = Heatmap(meth,
+             name = "mat", col = col_fun, top_annotation = top_ha, show_column_names = FALSE)
+draw(htnoncgi, annotation_legend_side = "bottom")
+```
+
+## Ridge Regression Summary
+- Performed Ridge Regression
+  - Fitting on WT and predicting on WT & GF
+  - Fitting on GF and predicting on WT & GF
+
+## Non CpG Islands
+::: {.panel-tabset}
+## Trained on WT
+```{r plot_fit_noncgi_wt, echo=FALSE}
+ggplotly(p_wt)
+```
+
+## Trained on GF
+```{r plot_fit_noncgi_gf, echo=FALSE}
+ggplotly(p_gf)
+```
+:::
+

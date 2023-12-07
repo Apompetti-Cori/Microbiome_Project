@@ -1,0 +1,1001 @@
+---
+title: "PCA Plots"
+author: Anthony Pompetti
+date: "2023-02-15"
+date-format: long
+format: 
+    html: 
+        theme: darkly
+        embed-resources: true
+highlight-style: arrow-dark
+editor_options: 
+  chunk_output_type: console
+---
+```{r setup, echo=FALSE}
+#| caption: "Loading libraries"
+#| output: false
+#| warning: false
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+```{css, echo=FALSE}
+.panel-tabset {
+  font-size: 20px;
+}
+```
+## Complete Cases All samples (without liv_4402)
+::: {.panel-tabset}
+## Organ (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here::here("results","rds","PCA","pca_75_all_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Organ (PC2,PC3)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = organ, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## Complete Cases Liver (without liv_4402)
+:::: {.panel-tabset}
+
+## All Strains
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_liver_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## C57BL6
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_liver_bl6_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20)) +
+NULL
+
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## 129SVEV
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_liver_129_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+::::
+
+ 
+## Complete Cases Spleen
+:::: {.panel-tabset}
+
+## All Strains
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_spleen_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## C57BL6
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_spleen_bl6_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## 129SVEV
+::: {.panel-tabset}
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_spleen_129_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+::::
+
+
+## Complete Cases Colon
+:::: {.panel-tabset}
+
+## All Strains
+::: {.panel-tabset}
+### Organ (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_colon_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Organ (PC2,PC3)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = organ, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = strain, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## C57BL6
+::: {.panel-tabset}
+### Organ (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_colon_bl6_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Organ (PC2,PC3)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+## 129SVEV
+::: {.panel-tabset}
+### Organ (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_colon_129_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Organ (PC2,PC3)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Microbiome (PC2,PC3)
+```{r, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+### Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::
+
+::::
+
+
+## Complete Cases Small Intestine
+::: {.panel-tabset}
+## Organ (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+pca <- trqwe::mcreadRDS(here("results","rds","PCA","pca_75_si_cc.rds"), mc.cores = 4)
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$microbiome <- pca$metadata$microbiome
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Organ (PC2,PC3)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = organ, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Microbiome (PC1,PC2)
+```{r, cache=TRUE, echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Microbiome (PC2,PC3)
+```{r,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Age (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Age (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = age, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Batch (PC1,PC2)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC1, {round(pca$variance[1],2)}%")) +
+ylab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+## Batch (PC2,PC3)
+```{r, cache=TRUE,echo=FALSE}
+p <- ggplot(pc_scores, aes(x = PC2, y = PC3, color = batch, shape = microbiome, text = rownames(pc_scores))) +
+geom_point() +
+labs(title = "PCA Plot") +
+xlab(str_glue("PC2, {round(pca$variance[2],2)}%")) +
+ylab(str_glue("PC3, {round(pca$variance[3],2)}%")) +
+theme(plot.title = element_text(size = 20))
+
+ggplotly(p, tooltip = "text")
+```
+:::

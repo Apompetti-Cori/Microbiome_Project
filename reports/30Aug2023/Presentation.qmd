@@ -1,0 +1,286 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-08-30"
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+source(here::here("scripts", "01_data_preprocessing.R"))
+library(circlize)
+library(ComplexHeatmap)
+library(reshape2)
+library(gt)
+```
+
+```{r, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("data","se","rrbs_compile"))
+
+#Microbiome aging se
+se1 <- as.data.frame(colData(se)) %>% filter(microbiome %in% c("gf", "wt"))
+
+#Consortium project se
+se2 <- as.data.frame(colData(se)) %>% filter(microbiome %noin% c("wt") & strain %in% c("129svev") & genotype %noin% c("WT"))
+
+rrbs_metadata <- read_csv("~/data/15Feb2023_Microbiome_RRBS_Project/data/metadata/rrbs_metadata.csv")
+```
+
+## Project 1: Microbiome and aging {style="font-size: 20px;"}
+
+```{r}
+count <- rrbs_metadata %>% 
+  filter(microbiome %in% c("gf", "wt")) %>%
+  select(age, strain, microbiome, organ) %>% 
+  count(age, strain, microbiome, organ) %>%
+  as.data.frame()
+
+count <- pivot_wider(count, names_from = c("microbiome", "strain",  "organ"), values_from = "n", names_glue = "{microbiome}.{strain}.{organ}")
+
+count[is.na(count)] <- 0
+
+count[1:15,] %>% 
+  gt(rowname_col = "age") %>% 
+  tab_spanner_delim(
+    delim = ".",
+    split = "last"
+  ) %>%
+  fmt(
+    columns = everything(),
+    fns = function(x) ifelse(x == 0, "—", scales::number(x))
+  ) %>%
+  cols_width(
+    everything() ~ px(45)
+  ) %>% 
+  data_color(
+    domain = c(0:24),
+    method = "numeric",
+    palette = colorRampPalette(c("snow","navy"))(24),
+    na_color = "snow"
+  )
+```
+
+## Project 2: Microbiome and tumorigenesis {style="font-size: 20px;"}
+
+```{r}
+count <- rrbs_metadata %>% filter(microbiome %noin% c("wt") & strain %in% c("129svev") & genotype %noin% c("WT")) %>%
+  select(mouse_id, genotype, treatment, 
+         microbiome, suborgan, sampletype) %>%
+  unique() %>%
+  replace_na(list(treatment = "None")) %>%
+  count(genotype, treatment, microbiome, suborgan, sampletype)
+
+count <- pivot_wider(count, names_from = c("genotype", "treatment", "microbiome", "suborgan", "sampletype"), values_from = "n", names_glue = "{genotype}.{treatment}.{microbiome}.{suborgan}.{sampletype}")
+
+count[is.na(count)] <- 0
+
+count %>% 
+  gt() %>% 
+  tab_spanner_delim(
+    delim = "."
+  ) %>%
+    fmt(
+    columns = everything(),
+    fns = function(x) ifelse(x == 0, "—", scales::number(x))
+  ) %>%
+  cols_width(
+    everything() ~ px(60)
+  ) %>% 
+  data_color(
+    domain = c(0:max(count)),
+    method = "numeric",
+    palette = colorRampPalette(c("snow","navy"))(max(count)),
+    na_color = "snow"
+  )
+```
+
+## Project 2: ApcMin/IL10KO, SPF Microbiome, No treatment, Normal samples, PCOL vs DCOL {style="font-size: 20px;"}
+
+::: panel-tabset
+### Sample layout {style="font-size: 8px;"}
+```{r, cache=TRUE}
+proj2 <- se[,rownames(se2)]
+
+proj2 <- proj2[,proj2$microbiome == "spf" & proj2$sampletype == "normal"]
+
+count <- as.data.frame(colData(proj2)) %>%
+  select(mouse_id, suborgan, sampletype) %>%
+  unique() %>%
+  replace_na(list(treatment = "None")) %>%
+  count(suborgan, sampletype)
+
+count <- pivot_wider(count, names_from = c("suborgan", "sampletype"), values_from = "n", names_glue = "{suborgan}.{sampletype}")
+
+count[is.na(count)] <- 0
+
+count %>% 
+  gt() %>% 
+  tab_spanner_delim(
+    delim = "."
+  ) %>%
+    fmt(
+    columns = everything(),
+    fns = function(x) ifelse(x == 0, "—", scales::number(x))
+  ) %>%
+  cols_width(
+    everything() ~ px(60)
+  ) %>% 
+  data_color(
+    domain = c(0:max(count)),
+    method = "numeric",
+    palette = colorRampPalette(c("snow","navy"))(max(count)),
+    na_color = "snow"
+  )
+
+proj2 <- filter_rrbs(proj2, percent_coverage = .75, 
+                     min_coverage = 30, max_coverage = Inf, 
+                     workers = 40, nblocks = 20)
+
+meth <- getMeth(proj2, type = "raw") %>% realize_Parallel(workers = 12, nblocks = 6)
+rownames(meth) <- mcols(proj2)$chr_base
+```
+
+### PCA
+```{r}
+#| fig.cap: PCA using !expr nrow(meth[!rowAnyNAs(meth),])
+
+pca <- PCAtools::pca(meth[!rowAnyNAs(meth),],
+                     metadata = colData(proj2))
+
+p <- plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        color = pca$metadata$suborgan,
+        text = paste(rownames(pca$metadata),                        
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(pca$loadings), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))
+
+p
+```
+:::
+
+## Differential Methylation using `r prettyNum(nrow(proj2), big.mark = ",", scientific = FALSE)` sites {style="font-size: 20px;"}
+
+```{r, include=FALSE}
+mvals <- beta2m(meth)
+
+design <- model.matrix(~0 + suborgan, data = colData(proj2))
+contrast.matrix <- limma::makeContrasts(
+  by_suborgan = suborganDCOL - suborganPCOL,
+  levels=design
+  )
+
+fit <- limma::lmFit(mvals, design)
+
+fit2 <- limma::contrasts.fit(fit, contrasts = contrast.matrix)
+fit2 <- limma::eBayes(fit2, trend = TRUE, robust = TRUE)
+
+results <- limma::topTable(fit2, number = Inf)
+results$chr_base <- rownames(results)
+results <- left_join(results, 
+                     as.data.frame(mcols(proj2)), 
+                     by = "chr_base")
+
+results$PCOL.AvgMeth <- rowMeans2(meth[results$chr_base, proj2$suborgan == "PCOL"])
+
+results$DCOL.AvgMeth <- rowMeans2(meth[results$chr_base, proj2$suborgan == "DCOL"])
+
+results$diffMeth <- results$DCOL.AvgMeth - results$PCOL.AvgMeth
+```
+
+::: panel-tabset
+### Volcano plot {style="font-size: 8px;"}
+```{r fig.width=20, fig.height=10}
+#| fig.cap: DCOL vs PCOL (upregulation is increase in DCOL)
+coriell::plot_volcano(results, x = "diffMeth", y = "adj.P.Val", fdr = .1, lfc = .1) + labs(caption = "FDR = .1 \ndiffMeth cutoff = .1")
+```
+
+### Hyper vs Hypo {style="font-size: 8px;"}
+```{r}
+data <- results[results$adj.P.Val < .1 & abs(results$diffMeth) > .1,]
+data$status[data$diffMeth > 0] <- "hyper"
+data$status[data$diffMeth < 0] <- "hypo"
+
+count <- data %>% 
+  select(status, type) %>%
+  count(status, type) %>%
+  mutate(percent = n/sum(n))
+
+
+
+ggplot(count, aes(x = status, y = percent, fill = type)) + 
+    geom_bar(position="stack", stat="identity")
+```
+
+### Heatmap {style="font-size: 8px;"}
+```{r fig.height=10, fig.width=20}
+se_subset <- subset(proj2, chr_base %in% data$chr_base)
+row_split <- as.data.frame(mcols(se_subset)[, "type", drop = FALSE])
+
+color_mapping <- list(
+  suborgan = c(
+    "PCOL" = "lightblue",
+    "DCOL" = "darkred"
+  )
+)
+
+col_ha <- HeatmapAnnotation(
+  df = colData(se_subset)[, c(
+    "suborgan"
+  ), drop = FALSE],
+  col = color_mapping,
+  annotation_legend_param = list(
+    suborgan = list(
+      nrow = 1
+      )
+    ),
+  border = TRUE
+)
+
+row_ha <- rowAnnotation(
+  df = row_split,
+  col = list(type = c(
+    "islands" = "green",
+    "non-islands" = "red"
+  )),
+  annotation_legend_param = list(
+    type = list(
+      nrow = 1
+    )
+  ),
+  border = TRUE
+)
+
+ht <- ComplexHeatmap::Heatmap(meth[data$chr_base,],
+  name = "meth",
+  row_split = row_split,
+  top_annotation = col_ha,
+  right_annotation = row_ha,
+  show_row_names = FALSE,
+  row_dend_side = "right",
+  heatmap_legend_param = list(
+    legend_direction = "horizontal",
+    legend_width = unit(5, "cm")
+  ),
+  col = colorRampPalette(c(
+    "navy",
+    "snow",
+    "gold"
+  ))(10)
+)
+
+draw(ht, heatmap_legend_side = "bot", annotation_legend_side = "bot")
+```
+:::

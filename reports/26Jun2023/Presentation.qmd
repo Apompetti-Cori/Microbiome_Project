@@ -1,0 +1,554 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-06-26"
+date-format: long
+cache: true
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+library(ChIPpeakAnno)
+library(glmnet)
+library(caret)
+library(ComplexHeatmap)
+library(circlize)
+library(annotatr)
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+::: {style="font-size: 50%;"}
+## Site selection methodology
+- Selected spleen samples with gf/wt microbiome (selected all CpG's)
+  - Filtered for coverage/variance
+  - Filtered out NA's
+  - Filtered for only wt samples
+  - Found CpGs that change most with age by fitting a linear model on each CpG
+    - Filtered for sites that have FDR < 0.05
+- Applied CpGs back to gf/wt microbiome
+    
+:::
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+pca <- PCAtools::pca(meth, colData(se))
+
+#Filter down for cpg islands
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                           range=rtracklayer::GRangesForUCSCGenome("mm10"))
+track <- rtracklayer::track(query)
+cpgi <- IRanges::subsetByOverlaps(se, track)
+
+cpgi <- getMeth(cpgi, type = "raw") %>% as.data.frame() %>% mutate(cpg_anno = "cpgi")
+
+#Filter down for noncpgi
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                     range=rtracklayer::GRangesForUCSCGenome("mm10"))
+track <- rtracklayer::track(query)
+noncpgi <- IRanges::subsetByOverlaps(se, track, invert = TRUE)
+
+noncpgi <- getMeth(noncpgi, type = "raw") %>% as.data.frame() %>% mutate(cpg_anno = "noncpgi")
+
+cpgs <- rbind(cpgi, noncpgi)
+
+cpgs_mat <- cpgs %>% select(-cpg_anno) %>% as.matrix()
+
+cpg_anno <- cpgs %>% pull(cpg_anno) %>% as.data.frame()
+colnames(cpg_anno)[1] = "cpg_anno"
+
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+se <- subsetByOverlaps(se, age_sites, invert = FALSE)
+```
+
+##
+```{r}
+col_fun = colorRamp2(c(0, 24), c("snow", "red"))
+annotation_colors = list(strain = c("129svev" = "orange4",
+                                    "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                                    "c57bl6" = "lavender"),
+                         microbiome = c("gf" = "black",
+                                        "wt" = "yellow"),
+                         cpg_anno = c("cpgi" = "blue",
+                                      "noncpgi" = "red"))
+ComplexHeatmap::pheatmap(cpgs_mat, annotation_row = cpg_anno, annotation_col = colData(se)[,c("age","microbiome","strain")], annotation_colors = annotation_colors)
+```
+
+##
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r}
+cat("Overlap between Himani's sites and Selected sites: ", length(findOverlaps(granges(se), granges)))
+
+cat("Himani's sites in SPL:",length(granges(se)), "Selected sites in SPL:", length(granges))
+
+vd <- ChIPpeakAnno::makeVennDiagram(list(granges(se), granges), NameOfPeaks=c("Himani", "Selected"), disable.logging = FALSE)
+```
+:::
+
+::: {.column width="40%"}
+- Here we are looking at the overlap of selected aging sites in spleen and Himani's selected aging sites in spleen
+:::
+
+::::
+
+## 
+```{r}
+pcacorplot(pca = pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+
+##
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+::: {style="font-size: 50%;"}
+## Site selection methodology
+- Selected spleen samples with gf/wt microbiome (selected all CpG's)
+  - Filtered for coverage/variance
+  - Filtered out NA's
+  - Filtered for only wt samples
+  - Found CpGs that change most with age by fitting a linear model on each CpG
+    - Filtered for sites that have FDR < 0.05
+  - Filtered for CpG Islands from these sites
+- Applied CpGs back to gf/wt microbiome
+  
+:::
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+
+#Filter for sites returned from linear model
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl.rds"))
+se <- subsetByOverlaps(se, granges, invert = FALSE)
+
+#Filter down for cpg islands
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                           range=rtracklayer::GRangesForUCSCGenome("mm10"))
+track <- rtracklayer::track(query)
+se <- IRanges::subsetByOverlaps(se, track)
+
+#Get methylation values and perform PCA
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+pca <- PCAtools::pca(meth, colData(se))
+
+#Get the granges from the cpgi from the selected sites
+granges <- granges(se)
+
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+se <- subsetByOverlaps(se, age_sites, invert = FALSE)
+```
+
+##
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r}
+cat("Overlap between Himani's sites and Selected sites: ", length(findOverlaps(granges(se), granges)))
+
+cat("Himani's sites in SPL:",length(granges(se)), "Selected sites in SPL:", length(granges))
+
+vd <- ChIPpeakAnno::makeVennDiagram(list(granges(se), granges), NameOfPeaks=c("Himani", "Selected"), disable.logging = FALSE)
+```
+:::
+
+::: {.column width="40%"}
+- Here we are looking at the overlap of selected aging sites in spleen and Himani's selected aging sites in spleen
+:::
+
+::::
+
+##
+```{r}
+pcacorplot(pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+
+##
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+::: {style="font-size: 50%;"}
+## Site selection methodology
+- Selected spleen samples with gf/wt microbiome (selected CpG islands)
+  - Filtered for coverage/variance
+  - Filtered out NA's
+  - Filtered for only wt samples
+  - Found CpGs that change most with age by fitting a linear model on each CpG
+    - Filtered for sites that have FDR < 0.05
+- Applied CpGs back to gf/wt microbiome
+    
+:::
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl_cgi.rds"))
+se <- subsetByOverlaps(se, granges, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+pca <- PCAtools::pca(meth, colData(se))
+
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+se <- subsetByOverlaps(se, age_sites, invert = FALSE)
+```
+
+##
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r}
+cat("Overlap between Himani's sites and Selected sites: ", length(findOverlaps(granges(se), granges)))
+
+cat("Himani's sites in SPL:",length(granges(se)), "Selected sites in SPL:", length(granges))
+
+vd <- ChIPpeakAnno::makeVennDiagram(list(granges(se), granges), NameOfPeaks=c("Himani", "Selected"), disable.logging = FALSE)
+```
+:::
+
+::: {.column width="40%"}
+- Here we are looking at the overlap of selected aging sites in spleen and Himani's selected aging sites in spleen
+:::
+
+::::
+
+##
+```{r}
+pcacorplot(pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+
+##
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+::: {style="font-size: 50%;"}
+## Site selection methodology
+- Selected spleen samples with gf/wt microbiome (selected all CpG's)
+  - Filtered for coverage/variance
+  - Filtered out NA's
+  - Filtered for just wt microbiome
+  - Found CpGs that change most with age by bootstrapping LASSO with strain added as a covariate
+- Applied CpGs back to gf/wt microbiome
+  
+:::
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here("results/rds/15_bootstrap_lasso/granges_spl_strain.rds"))
+se <- subsetByOverlaps(se, granges, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+pca <- PCAtools::pca(meth, colData(se))
+
+#Filter down for cpg islands
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                           range=rtracklayer::GRangesForUCSCGenome("mm10"))
+track <- rtracklayer::track(query)
+cpgi <- IRanges::subsetByOverlaps(se, track)
+
+cpgi <- getMeth(cpgi, type = "raw") %>% as.data.frame() %>% mutate(cpg_anno = "cpgi")
+
+#Filter down for noncpgi
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                     range=rtracklayer::GRangesForUCSCGenome("mm10"))
+track <- rtracklayer::track(query)
+noncpgi <- IRanges::subsetByOverlaps(se, track, invert = TRUE)
+
+noncpgi <- getMeth(noncpgi, type = "raw") %>% as.data.frame() %>% mutate(cpg_anno = "noncpgi")
+
+cpgs <- rbind(cpgi, noncpgi)
+
+cpgs_mat <- cpgs %>% select(-cpg_anno) %>% as.matrix()
+
+cpg_anno <- cpgs %>% pull(cpg_anno) %>% as.data.frame()
+colnames(cpg_anno)[1] = "cpg_anno"
+
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+se <- subsetByOverlaps(se, age_sites, invert = FALSE)
+```
+
+##
+```{r}
+col_fun = colorRamp2(c(0, 24), c("snow", "red"))
+annotation_colors = list(strain = c("129svev" = "orange4",
+                                    "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                                    "c57bl6" = "lavender"),
+                         microbiome = c("gf" = "black",
+                                        "wt" = "yellow"),
+                         cpg_anno = c("cpgi" = "blue",
+                                      "noncpgi" = "red"))
+ComplexHeatmap::pheatmap(cpgs_mat, annotation_row = cpg_anno, annotation_col = colData(se)[,c("age","microbiome","strain")], annotation_colors = annotation_colors)
+```
+
+##
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r}
+cat("Overlap between Himani's sites and Selected sites: ", length(findOverlaps(granges(se), granges)))
+
+cat("Himani's sites in SPL:",length(granges(se)), "Selected sites in SPL:", length(granges))
+
+vd <- ChIPpeakAnno::makeVennDiagram(list(granges(se), granges), NameOfPeaks=c("Himani", "Selected"), disable.logging = FALSE)
+```
+:::
+
+::: {.column width="40%"}
+- Here we are looking at the overlap of LASSO bootstrap selected aging sites in spleen and Himani's selected aging sites in spleen
+:::
+
+::::
+
+##
+```{r}
+pcacorplot(pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+
+##
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+## Comparing linear model method to Himani's
+- I wanted to see the overlap of sites that are selected if we do the same methodology on the original samples
+
+```{r}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+
+#obtain the samples Himani used for aging sites
+samples <- read.csv(here("data/metadata/annotated_perm_intestine44_age.tsv"), sep = "\t") %>% 
+  colnames() %>% 
+  grep(pattern = ".cov.gz", value = TRUE) %>% 
+  tools::file_path_sans_ext() %>% 
+  tools::file_path_sans_ext()
+
+#filter se for Himani's samples
+se <- se[,samples]
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_himani.rds"))
+
+se <- subsetByOverlaps(se, age_sites, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+```
+
+##
+:::: {.columns}
+
+::: {.column width="60%"}
+```{r}
+cat("Overlap between Himani's sites and Selected sites: ", length(findOverlaps(granges(se), granges)))
+
+cat("Himani's sites in Original Samples:",length(granges(se)), "Selected sites in Original Samples:", length(granges))
+
+vd <- ChIPpeakAnno::makeVennDiagram(list(granges(se), granges), NameOfPeaks=c("Himani", "Selected"), disable.logging = FALSE)
+```
+:::
+
+::: {.column width="40%"}
+- Here we are looking at the overlap of selected aging sites and Himani's selected aging sites in original samples
+:::
+
+::::
+
+## Himani's sites
+```{r}
+pcacorplot(pca = pca, components = 1:10, metavars = c("age","suborgan"))
+```
+
+## Himani's sites
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$suborgan,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$suborgan, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+```{r}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+
+#obtain the samples Himani used for aging sites
+samples <- read.csv(here("data/metadata/annotated_perm_intestine44_age.tsv"), sep = "\t") %>% 
+  colnames() %>% 
+  grep(pattern = ".cov.gz", value = TRUE) %>% 
+  tools::file_path_sans_ext() %>% 
+  tools::file_path_sans_ext()
+
+#filter se for Himani's samples
+se <- se[,samples]
+
+age_sites <- readRDS(here("results/rds/10_get_aging_sites/age_sites.rds"))
+
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_himani.rds"))
+
+se <- subsetByOverlaps(se, granges, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+```
+
+## Selected sites
+```{r}
+pcacorplot(pca = pca, components = 1:10, metavars = c("age","suborgan"))
+```
+
+## Selected sites
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$suborgan,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$suborgan, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+##
+```{r}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+
+#obtain the samples Himani used for aging sites
+samples <- read.csv(here("data/metadata/annotated_perm_intestine44_age.tsv"), sep = "\t") %>% 
+  colnames() %>% 
+  grep(pattern = ".cov.gz", value = TRUE) %>% 
+  tools::file_path_sans_ext() %>% 
+  tools::file_path_sans_ext()
+
+#filter se for Himani's samples
+se <- se[,samples]
+
+union_granges <- GenomicRanges::union(age_sites, granges)
+```
+
+
+

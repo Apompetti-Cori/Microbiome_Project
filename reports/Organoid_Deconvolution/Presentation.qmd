@@ -1,0 +1,140 @@
+---
+title: "Organoid Samples Feb 15 2023 Deconvolution"
+author: Anthony Pompetti
+date: "2023-02-15"
+date-format: long
+format: 
+    html: 
+        theme: darkly
+highlight-style: arrow-dark
+---
+
+```{r setup}
+#| caption: "Loading libraries"
+#| output: false
+#| warning: false
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+```{r pca plot}
+pca <- trqwe::mcreadRDS(here("results","rds","pca.rds"), mc.cores = 4)
+pca_1 <- trqwe::mcreadRDS(here("results","rds","pca_1.rds"), mc.cores = 4)
+```
+
+```{r, include=FALSE}
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$condition <- pca$metadata$condition
+pc_scores$age <- pca$metadata$age
+pc_scores$organ <- pca$metadata$organ
+pc_scores$batch <- pca$metadata$batch
+pc_scores$strain <-  pca$metadata$strain
+```
+
+```{r, include=FALSE}
+pc_scores_1 <- pca_1$rotated %>% as.data.frame
+pc_scores_1$condition <- pca_1$metadata$condition
+pc_scores_1$age <- pca_1$metadata$age
+pc_scores_1$organ <- pca_1$metadata$organ
+pc_scores_1$batch <- pca_1$metadata$batch
+pc_scores_1$strain <-  pca_1$metadata$strain
+```
+
+```{r}
+pca_meta <- sample_table_rrbs[row.names(pca$rotated), ]
+pc_scores <- pca$rotated %>% as.data.frame
+pc_scores$condition <- pca$metadata$condition
+pc_scores$organ <- pca$metadata$organ
+```
+
+```{r}
+p <- ggplot(pc_scores, aes(x = PC1, y = PC2, color = organ)) +
+  geom_point() +
+  labs(title = "Organoid PCA Plot") +
+  theme(plot.title = element_text(size = 20)) +
+  scale_color_viridis_d()
+
+ggplotly(p, tooltip = c("organ"))
+```
+
+```{r}
+list_of_data = list(meth_rrbs, meth_raw, ref_matrix)
+
+common_names = Reduce(intersect, lapply(list_of_data, row.names))
+list_of_data = lapply(list_of_data, function(x) { x[row.names(x) %in% common_names,] })
+
+k <- which(is.na(list_of_data[[1]]), arr.ind=TRUE)
+list_of_data[[1]][k] <- rowMeans(list_of_data[[1]], na.rm=TRUE)[k[,1]]
+
+k <- which(is.na(list_of_data[[2]]), arr.ind=TRUE)
+list_of_data[[2]][k] <- rowMeans(list_of_data[[2]], na.rm=TRUE)[k[,1]]
+
+meth_rrbs.liv.lun <- list_of_data[[1]][,rrbs_sample_table[rownames(rrbs_sample_table)!="liv_4402",] %>% filter(organ == "LIV" | organ == "LUN") %>% rownames()]
+```
+
+```{r generate signature}
+job::empty({
+  library(MethylCIBERSORT) |> suppressPackageStartupMessages()
+  library(tidyverse) |> suppressPackageStartupMessages()
+  
+  message("reading in input data")
+  md <- read.table("./bedfiles/metadata.tsv", sep = "\t", header = T)
+  md <- md %>% column_to_rownames("File.accession")
+  md <- md[colnames(list_of_data[[3]]), ]
+  
+  message("performing feature selection")
+  signature <- FeatureSelect.V4(CellLines.matrix = NULL, 
+                                Heatmap = FALSE, 
+                                sigName = "ExampleType", 
+                                Stroma.matrix = list_of_data[[3]], 
+                                deltaBeta = 0.2, 
+                                FDR = 0.05, 
+                                MaxDMRs = 300, 
+                                Phenotype.stroma = md$Biosample.term.name,
+                                export = FALSE)
+  
+  signature <- (signature$SignatureMatrix / 100)
+  
+  job::export(c(signature))
+}, import = "auto", title = "Generating Signature Matrix")
+```
+
+```{r load MethyResolve Data}
+data("MethylMix")
+data("MethylSig")
+```
+
+```{r deconvolute methylation}
+job::empty({
+  library(MethylResolver) |> suppressPackageStartupMessages()
+  library(methylDeConv) |> suppressPackageStartupMessages()
+  library(tidyverse) |> suppressPackageStartupMessages()
+  library(parallel) |> suppressPackageStartupMessages()
+  library(foreach) |> suppressPackageStartupMessages()
+  library(iterators) |> suppressPackageStartupMessages()
+  library(doParallel) |> suppressPackageStartupMessages()
+  
+  message("reading in input data")
+  md <- read.table("./bedfiles/metadata.tsv", sep = "\t", header = T)
+  md <- md %>% column_to_rownames("File.accession")
+  md <- md[colnames(list_of_data[[3]]), ]
+  
+  compTable <- ref_compTable(list_of_data[[3]], md$Biosample.term.name)
+  compTable <- compTable[, 3:6]
+  
+  probes <- rownames(signature)
+  
+  deconv <- methylDeConv::MethylResolver(methylMix = list_of_data[[2]], 
+                                         methylSig = compTable, 
+                                         probes_select = probes)
+  message("saving output")
+  saveRDS(deconv, file = "./rds/deconv.rds")
+  job::export(c(deconv))
+}, import = "auto", title = "Deconvoluting Methylation Data")
+```
+
+```{r}
+job::empty({
+  
+})
+```
+

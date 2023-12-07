@@ -1,0 +1,253 @@
+```{r setup, include = FALSE}
+source(here::here("scripts/01_data_preprocessing.R"))
+cpg_granges <- DMRichR::getCpGs(genome="mm10")
+```
+
+```{r pcacolon1, include=FALSE, cache=TRUE}
+#Select colon samples, use himani's aging sites, get meth
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here::here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ %in% c("COL") & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here::here("results/rds/10/age_sites.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = FALSE)
+meth <- getMeth(se, type = "raw") %>% realize_Parallel(workers = 12, nblocks = 6)
+pca <- PCAtools::pca(meth[!matrixStats::rowAnyNAs(meth),], metadata = colData(se))
+```
+
+```{r}
+fig1 <- ggplot(data = pca$rotated, aes(PC1, PC2, color = pca$metadata$age, shape = interaction(pca$metadata$strain, pca$metadata$microbiome))) +
+      geom_point(size = 3, alpha = .9) +
+      scale_color_viridis_c() +
+      scale_shape_manual(values = c(15,16,17,18)) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(family = "Arial"),
+        legend.title = element_text(size = 11),
+        axis.title.x = element_text(size = 11),
+        axis.title.y = element_text(size = 11),
+        legend.text = element_text(size = 8),
+        axis.text = element_text(size = 8),
+        legend.position = "bottom"
+      ) + 
+  labs(color = "Age", shape="Strain-Microbiota")
+
+fig1
+```
+
+```{r}
+fig2 <- pcacorplot(pca, components = 1:10, metavars = c("microbiome", "strain", "age"))
+
+fig2
+```
+
+```{r}
+meth <-meth[!matrixStats::rowAnyNAs(meth),]
+
+#Run pca on the data you want to train the model on
+pca <- prcomp(t(meth[,se$microbiome == "wt"]))
+perc_var <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 1)
+
+#Create the training set
+train <- data.frame(cbind(pca$x, colData(se[,se$microbiome == "wt"])[,c("age", "microbiome", "strain"),drop=FALSE]))
+
+#Fit the model on the training set
+mod <- lm(age~PC1,data = train)
+
+#Create the set you wish to perform predictions on
+new <- t(meth[,se$microbiome == "gf"])
+
+#Predict the new data using the pca from before
+pred.prcomp <- predict(pca, newdata = new) %>% as.data.frame()
+pred_df <- data.frame(cbind(pred.prcomp, colData(se[,se$microbiome == "gf"])[,c("age", "microbiome", "strain"),drop=FALSE]))
+
+# Combine the training and testing into a single table for plotting
+comb_dt <- data.table::rbindlist(list(Training=train, Test=pred_df), idcol="Set")
+
+#Use the pca predictions to predict age
+pred.lm.new <- predict(mod, newdata = pred.prcomp)
+
+pred.lm.train <- predict(mod, newdata = train)
+
+#Get the actual values
+actual.gf <- colData(se[,se$microbiome == "gf"])[,"age"]
+
+actual.wt <- colData(se[,se$microbiome == "wt"])[,"age"]
+
+#Bind pred and actual
+delta.new <- cbind(pred.lm.new, actual.gf)
+delta.new <- cbind(delta.new, rep("gf", nrow(delta.new)))
+colnames(delta.new) <- c("pred", "actual", "microbiome")
+
+delta.train <- cbind(pred.lm.train, actual.wt)
+delta.train <- cbind(delta.train, rep("wt", nrow(delta.train)))
+colnames(delta.train) <- c("pred", "actual", "microbiome")
+
+delta <- data.frame(rbind(delta.new,delta.train)) %>% 
+  mutate(pred = as.numeric(pred), actual = as.numeric(actual))
+
+#Plot delta age
+p1 <- ggplot(data = delta, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text") + theme_classic()
+
+#Run pca on the data you want to train the model on
+pca <- prcomp(t(meth[,se$microbiome == "gf"]))
+
+#Create the training set
+train <- data.frame(cbind(pca$x, colData(se[,se$microbiome == "gf"])[,c("age","microbiome","strain"),drop=FALSE]))
+
+#Fit the model on the training set
+mod <- lm(age~PC1,data = train)
+
+#Create the set you wish to perform predictions on
+new <- t(meth[,se$microbiome == "wt"])
+
+#Predict the new data using the pca from before
+pred.prcomp <- predict(pca, newdata = new) %>% as.data.frame()
+pred_df <- data.frame(cbind(pred.prcomp, colData(se[,se$microbiome == "wt"])[,c("age","microbiome","strain"),drop=FALSE]))
+
+# Combine the training and testing into a single table for plotting
+comb_dt <- data.table::rbindlist(list(Training=train, Test=pred_df), idcol="Set")
+
+#Use the pca predictions to predict age
+pred.lm.new <- predict(mod, newdata = pred.prcomp)
+
+pred.lm.train <- predict(mod, newdata = train)
+
+#Get the actual values
+actual.gf <- colData(se[,se$microbiome == "gf"])[,"age"]
+
+actual.wt <- colData(se[,se$microbiome == "wt"])[,"age"]
+
+#Bind pred and actual
+delta.new <- cbind(pred.lm.new, actual.wt)
+delta.new <- cbind(delta.new, rep("wt", nrow(delta.new)))
+colnames(delta.new) <- c("pred", "actual", "microbiome")
+
+delta.train <- cbind(pred.lm.train, actual.gf)
+delta.train <- cbind(delta.train, rep("gf", nrow(delta.train)))
+colnames(delta.train) <- c("pred", "actual", "microbiome")
+
+delta <- data.frame(rbind(delta.new,delta.train)) %>% 
+  mutate(pred = as.numeric(pred), actual = as.numeric(actual))
+
+#Plot delta age
+p2 <- ggplot(data = delta, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text") + theme_classic()
+
+fig3 <- p1 + p2 + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+
+fig3
+```
+
+```{r}
+#Filter down for cpg islands
+session <- rtracklayer::browserSession("UCSC",url = 'http://genome-euro.ucsc.edu/cgi-bin/')
+GenomeInfoDb::genome(session) <- "mm10"
+query <- rtracklayer::ucscTableQuery(session, track="CpG Islands",table="cpgIslandExt",
+                                           range=rtracklayer::GRangesForUCSCGenome("mm10"))
+cgi <- rtracklayer::track(query)
+
+methcgi <- getMeth(IRanges::subsetByOverlaps(se, cgi), type = "raw") %>% 
+  realize_Parallel(workers = 12, nblocks = 6)
+
+methcgi <-methcgi[!matrixStats::rowAnyNAs(methcgi),]
+
+methnoncgi <- getMeth(IRanges::subsetByOverlaps(se, cgi, invert = TRUE), type = "raw") %>% 
+  realize_Parallel(workers = 12, nblocks = 6)
+
+methnoncgi <-methnoncgi[!matrixStats::rowAnyNAs(methnoncgi),]
+
+col_fun = colorRamp2(c(0, 24), c("white", "red"))
+
+annotation_colors = list(strain = c("129svev" = "orange4",
+                                    "c57bl6" = "lavender"),
+                         microbiome = c("gf" = "black",
+                                        "wt" = "yellow"),
+                         age = col_fun)
+
+df <- colData(se)[, c("strain", "microbiome", "age"), drop = FALSE]
+col_ha <- HeatmapAnnotation(
+  df = df,
+  col = annotation_colors,
+  annotation_legend_param = list(
+    strain = list(
+      nrow = 1
+      ),
+    microbiome = list(
+      nrow = 1
+    ),
+    age = list(
+      direction = "horizontal"
+    )
+    ),
+  border = TRUE
+)
+
+ht1 <- ComplexHeatmap::Heatmap(methcgi,
+                         column_title = "Islands",
+                         col = colorRampPalette(c("navy", "white", "gold"))(10),
+                         top_annotation = col_ha,
+                         name = "meth",
+                         cluster_rows = TRUE,
+                         heatmap_legend_param = list(
+                           legend_direction = "horizontal",
+                           legend_width = unit(5, "cm")),
+                         show_row_names = FALSE,
+                         show_column_names = FALSE)
+
+ht2 <- ComplexHeatmap::Heatmap(methnoncgi,
+                         column_title = "Non-Islands",
+                         col = colorRampPalette(c("navy", "white", "gold"))(10),
+                         top_annotation = col_ha,
+                         name = "meth",
+                         cluster_rows = TRUE,
+                         heatmap_legend_param = list(
+                           legend_direction = "horizontal",
+                           legend_width = unit(5, "cm")),
+                         show_row_names = FALSE,
+                         show_column_names = FALSE)
+
+p1 <- draw(
+  ht1, heatmap_legend_side = "bot", 
+  annotation_legend_side = "bot"
+) %>% 
+  grid.grabExpr()
+
+p2 <- draw(
+  ht2, heatmap_legend_side = "bot", 
+  annotation_legend_side = "bot"
+) %>% 
+  grid.grabExpr()
+
+fig4 <- wrap_plots(list(p1, p2))
+
+fig4
+```
+
+```{r, fig.width=10, fig.height=6}
+fig1
+```
+
+```{r}
+fig2
+```
+
+```{r, fig.width=10, fig.height=6}
+fig3
+```
+
+```{r, fig.width=12, fig.height=6}
+fig4
+```
+

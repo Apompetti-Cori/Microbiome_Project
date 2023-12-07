@@ -1,0 +1,3475 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: ""
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+```{css cssFormat, echo=FALSE, include=FALSE}
+.panel-tabset .nav-item {
+  font-size: 3px
+}
+```
+
+```{r loadcache, include=FALSE, eval=FALSE}
+qwraps2::lazyload_cache_dir(here::here("reports/13Nov2023/Presentation_cache/revealjs"))
+```
+
+```{r loadcache_label, include=FALSE, eval=FALSE}
+qwraps2::lazyload_cache_labels(path = here::here("reports/13Nov2023/Presentation_cache/revealjs"), labels = c("diffmeth3", "diffmeth1", "diffmeth_res"))
+```
+
+## Setup {visibility="hidden"}
+```{r setup, include=FALSE}
+library(here)
+here::i_am(".here")
+source(here::here("scripts", "01_data_preprocessing.R"))
+library(circlize)
+library(ComplexHeatmap)
+library(reshape2)
+library(gt)
+library(patchwork)
+library(lattice)
+library(ggmosaic)
+library(org.Mm.eg.db)
+library(clusterProfiler)
+library(zeallot)
+library(plyr)
+```
+
+## Setup Summarized Experiment {visibility="hidden"}
+```{r sumexp, include=FALSE, cache=FALSE, eval=FALSE}
+job::empty({
+#Setup here and load functions/packages
+setwd("/home/apompetti/data/15Feb2023_Microbiome_RRBS_Project/reports/")
+library(here)
+source(here::here("scripts/01_data_preprocessing.R"))
+
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here::here("data/se/rrbs_compile"))
+
+pj <- se[
+  ,
+  se$genotype %in% c("ApcMin", "ApcMin/IL10KO") 
+  & se$sampletype %noin% c("Organoid")
+]
+
+#Filter project for no treatment
+pj <- pj[
+  ,
+  is.na(pj$treatment)
+]
+
+#Filter project for 20 coverage across 75% of the samples. Ignore tumor samples when filtering.
+pj <- filter_rrbs(
+  pj, 
+  percent_coverage = .75,
+  min_coverage = 20, 
+  max_coverage = Inf,
+  workers = 40, 
+  nblocks = 20,
+  ignore_samples = "se$sampletype != 'tumor'"
+)
+
+#Filter project for just normal samples.
+pj_normal <- pj[,pj$sampletype == "normal"]
+
+#Annotate cpgs for cpg islands, etc...
+#pj_normal <- annotate_se(pj_normal)
+
+HDF5Array::saveHDF5SummarizedExperiment(pj_normal, dir = here::here("data/se/rrbs_compile"), prefix = "pj_normal", replace = FALSE)
+
+job::export(c())
+
+}, title = "Setup Summarized Experiment")
+```
+
+## Load in RNAseq experiment {visibility="hidden"}
+```{r rnaseq, include=FALSE, cache=FALSE}
+library(edgeR)
+rnaseq_ranged <- readRDS(here::here("data/se/ProxDistRNAseq/RangedSummarizedExperiment.rds"))
+rnaseq <- readRDS(here::here("data/se/ProxDistRNAseq/SummarizedExperiment.rds"))
+rowData(rnaseq_ranged) <- rowData(rnaseq)
+coldata <- read.csv(here::here("data/se/ProxDistRNAseq/sample_table_input.csv"))
+rownames(coldata) <- coldata$sample
+coldata$suborgan <- c("PCOL", "PCOL", "DCOL", "PCOL", "DCOL", "DCOL")
+coldata$group <- coldata$suborgan
+colData(rnaseq) <- DataFrame(coldata)
+```
+
+
+## Analysis: Differential Methylation {visibility="hidden"}
+```{r diffmeth, include=FALSE, cache=TRUE}
+#Load summarized experiment
+pj_normal <- HDF5Array::loadHDF5SummarizedExperiment(here::here("data/se/rrbs_compile"), prefix = "pj_normal")
+  
+md <- data.frame(colData(pj_normal[,get_Duplicates(pj_normal$mouse_id)]))
+md$suborgan_microbiome <- paste(md$suborgan, md$microbiome, sep = "_")
+md$mouse_id <- as.factor(md$mouse_id)
+
+#Get methylation values and convert methylation values to mvals
+meth <- getMeth(pj_normal, type = "raw") %>% realize_Parallel(workers = 12, nblocks = 6)
+mvals <- beta2m(meth[,md$sample_id])
+
+#This design can be used to test paired sample effects
+## design <- model.matrix(~0 + suborgan_microbiome + mouse_id, data = md)
+design <- model.matrix(~0 + suborgan_microbiome, data = md)
+colnames(design) <- gsub(pattern = "suborgan_microbiome", "", colnames(design))
+
+#estimate the correlation between the repeat samples for the same individual
+#dupcor <- limma::duplicateCorrelation(mvals, design, block=md$mouse_id)
+
+#Fit mvals to design
+fit <- limma::lmFit(mvals, design)
+
+#Create contrast matrix
+contrast.matrix <- limma::makeContrasts(
+  by_suborgan = (PCOL_consortium + PCOL_spf + PCOL_gf + PCOL_eckp)/4 - (DCOL_consortium + DCOL_spf + DCOL_gf + DCOL_eckp)/4,
+  spf_by_suborgan = PCOL_spf - DCOL_spf,
+  gf_by_suborgan = PCOL_gf - DCOL_gf,
+  eckp_by_suborgan = PCOL_eckp - DCOL_eckp,
+  consortium_by_suborgan = PCOL_consortium - DCOL_consortium,
+  levels=design
+  )
+
+fit2 <- limma::contrasts.fit(fit, contrasts = contrast.matrix)
+fit2 <- limma::eBayes(fit2, trend = TRUE, robust = TRUE)
+
+dm_results <- mcsapply(
+  colnames(contrast.matrix), 
+  function(x){
+    limma::topTable(fit2, number = Inf, coef = x)
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE,
+  mc.cores = length(colnames(contrast.matrix))
+)
+
+dm_results <- mcsapply(
+  names(dm_results),
+  FUN = function(x) {
+    df <- dm_results[[x]]
+    df <- dplyr::mutate(df, chr_base = rownames(df))
+    CD <- contrastDiff(
+      design = design, contrast.matrix = contrast.matrix,
+      contrast_name = x, meth = meth[,md$sample_id]
+    )
+    mcols <- as.data.frame(mcols(pj_normal))
+    df <- left_join(df, mcols, by = "chr_base")
+    df <- left_join(df, CD, by = "chr_base")
+    df$sig <- df$adj.P.Val < 0.1 & abs(df$diff) > .1
+    rownames(df) <- df$chr_base
+    return(df)
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE,
+  mc.cores = length(dm_results)
+)
+
+contrasts <- data.frame(
+  chr_base = mcols(pj_normal)[["chr_base"]],
+  row.names = mcols(pj_normal)[["chr_base"]]
+)
+
+for(name in names(dm_results)){
+    df <- dm_results[[name]]
+    test <- df[df$sig,"chr_base"]
+    contrasts[[name]] <- contrasts$chr_base %in% test
+}
+
+contrasts <- (left_join(data.frame(mcols(pj_normal)), contrasts, by = "chr_base"))
+```
+
+## Analysis: PCA {visibility="hidden"}
+```{r pca_analysis, include=FALSE, cache=TRUE}
+#PCA ALL
+pca_meth <- meth
+pca_all <- PCAtools::pca(
+  pca_meth[!rowAnyNAs(pca_meth),],
+  metadata = colData(pj_normal)
+)
+
+#PCA NONCGI
+sites <- rownames(subset(pj_normal, !is_island))
+pca_meth <- meth[sites,]
+pca_noncgi <- PCAtools::pca(
+  pca_meth[!rowAnyNAs(pca_meth),],
+  metadata = colData(pj_normal)
+)
+
+#PCA CGI
+sites <- rownames(subset(pj_normal, is_island))
+pca_meth <- meth[sites,]
+pca_cgi <- PCAtools::pca(
+  pca_meth[!rowAnyNAs(pca_meth),],
+  metadata = colData(pj_normal)
+)
+
+#PCA NO SIDE
+sites <- contrasts %>% 
+  filter(!(gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan)) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+pca_meth <- pca_meth[complete.cases(pca_meth),]
+
+pca_noside <- PCAtools::pca(
+    pca_meth,
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+
+#PCA NO SIDE NONCGI
+sites <- contrasts %>% 
+  filter(!(by_suborgan | gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan) & !is_island) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+pca_meth <- pca_meth[complete.cases(pca_meth),]
+
+pca_noside_noncgi <- PCAtools::pca(
+    pca_meth,
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+
+#PCA NO SIDE CGI
+sites <- contrasts %>% 
+  filter(!(by_suborgan | gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan) & is_island) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+
+pca_noside_cgi <- PCAtools::pca(
+    pca_meth[!rowAnyNAs(pca_meth),],
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+
+#PCA SIDE
+sites <- contrasts %>% 
+  filter((by_suborgan | gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan)) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+
+pca_side <- PCAtools::pca(
+    pca_meth[!rowAnyNAs(pca_meth),],
+    scale = TRUE,
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+
+#PCA SIDE NONCGI
+sites <- contrasts %>% 
+  filter((by_suborgan | gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan) & !is_island) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+
+pca_side_noncgi <- PCAtools::pca(
+    pca_meth[!rowAnyNAs(pca_meth),],
+    scale = TRUE,
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+
+#PCA SIDE CGI
+sites <- contrasts %>% 
+  filter((by_suborgan | gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan) & is_island) %>%
+  pull(chr_base)
+
+pca_meth <- meth[rownames(meth) %in% sites,]
+
+pca_side_cgi <- PCAtools::pca(
+    pca_meth[!rowAnyNAs(pca_meth),],
+    scale = TRUE,
+    metadata = colData(pj_normal)[colnames(pca_meth),]
+)
+```
+
+## Analysis: Gene Ontology {visibility="hidden"}
+```{r geneont1, include=FALSE, cache=TRUE}
+#get a gtf filter and filter for protein coding genes
+gtf <- rtracklayer::import(here::here("data/metadata/Mus_musculus.GRCm38.102.gtf"))
+gtf <- subset(gtf, type == "gene" & gene_biotype == "protein_coding")
+
+universe <- bitr(gtf$gene_id, fromType = "ENSEMBL",
+    toType = c("ENTREZID", "SYMBOL"),
+    OrgDb = org.Mm.eg.db)
+
+go_results1 <- sapply(
+  names(dm_results),
+  FUN = function(x){
+    df <- dm_results[[x]]
+    
+    df <- df[df$is_promoter & df$sig,]
+    
+    gene_ids <- df$annot.gene_id %>% unlist() %>% unique()
+    
+    go_result <- clusterProfiler::enrichGO(
+      gene = gene_ids,
+      universe = universe$ENTREZID,
+      OrgDb = "org.Mm.eg.db",
+      ont = "BP",
+      keyType = "ENTREZID"
+    )
+    
+    if(is.null(go_result)){
+      go_result = NULL
+      p = NULL
+    } else if((nrow(go_result) == 0)) {
+      go_result = NULL
+      p = NULL
+    } else{
+      p <- barplot(go_result)
+    }
+    
+    return(list("go" = go_result, "barplot" = p))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+```{r geneont2, include=FALSE, cache=TRUE}
+go_results2 <- sapply(
+  names(dm_results),
+  FUN = function(x){
+    df <- dm_results[[x]]
+    
+    df <- df[df$is_island,]
+    
+    df_universe <- df[df$is_promoter,]
+    
+    universe <- df_universe$annot.gene_id %>% unlist() %>% unique()
+    
+    df <- df[df$is_promoter & df$sig,]
+    
+    gene_ids <- df$annot.gene_id %>% unlist() %>% unique()
+
+    go_result <- clusterProfiler::enrichGO(
+      gene = gene_ids,
+      OrgDb = "org.Mm.eg.db",
+      universe = universe,
+      ont = "BP",
+      keyType = "ENTREZID",
+      readable = TRUE
+    )
+    
+    if(is.null(go_result)){
+      go_result = NULL
+      p = NULL
+    } else if((nrow(go_result) == 0)) {
+      go_result = NULL
+      p = NULL
+    } else{
+      p <- barplot(go_result)
+    }
+    
+    return(list("go" = go_result, "barplot" = p))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+## Analysis: Correlation Test {visibility="hidden"}
+```{r permcor, include=FALSE, cache=TRUE, eval=FALSE}
+aging <-read_tsv(here::here('data/metadata/annotated_perm_intestine44_age.tsv'))
+samples <- tools::file_path_sans_ext(colnames(aging)[endsWith(colnames(aging), ".cov.gz")], compression = TRUE)
+
+perm_se <- subsetByOverlaps(se[,se$sample_id %in% samples], pj_normal)
+rownames(perm_se) <- rownames(pj_normal)
+
+meth_aging <- getMeth(
+  perm_se, 
+  type = "raw"
+) %>% 
+  realize_Parallel(
+    workers = 12, 
+    nblocks = 6
+  )
+
+#keep loci that have at least 2 values
+keepLoci <- (rowSums(is.na(meth_aging)) < 42)
+
+meth_aging <- meth_aging[keepLoci,]
+
+age_cor <- scrime::rowCors(meth_aging, colData(perm_se)$age)
+```
+
+## Analysis: Overlap Differential Methylation {visibility="hidden"}
+```{r overlapAnalysis1, include=FALSE}
+# Make constrast matrix
+df <- data.frame(vec = names(dm_results), row.names = names(dm_results))
+
+design <- model.matrix(~0+vec, data = df)
+colnames(design) <- gsub(pattern = "vec", "", colnames(design))
+
+contrast.matrix <- limma::makeContrasts(
+  contrast1 = consortium_by_suborgan - spf_by_suborgan,
+  contrast2 = consortium_by_suborgan - eckp_by_suborgan,
+  contrast3 = gf_by_suborgan - consortium_by_suborgan,
+  contrast4 = gf_by_suborgan - eckp_by_suborgan,
+  contrast5 = gf_by_suborgan - spf_by_suborgan,
+  contrast6 = eckp_by_suborgan - spf_by_suborgan,
+  contrast7 = gf_by_suborgan - (eckp_by_suborgan + spf_by_suborgan + consortium_by_suborgan),
+  contrast8 = by_suborgan - gf_by_suborgan,
+  contrast9 = by_suborgan - (gf_by_suborgan + consortium_by_suborgan + spf_by_suborgan + eckp_by_suborgan),
+  contrast20 = eckp_gf - spf_gf, 
+  contrast21 = eckp_gf - consortium_gf,
+  contrast22 = spf_gf - consortium_gf,
+  contrast23 = eckp_gf_pcol - eckp_gf_dcol, 
+  contrast24 = spf_gf_pcol - spf_gf_dcol,
+  contrast25 = consortium_gf_pcol - consortium_gf_dcol,
+  contrast26 = (eckp_gf_pcol + eckp_gf_dcol) - (gf_by_suborgan + consortium_by_suborgan + spf_by_suborgan + eckp_by_suborgan),
+  contrast27 = eckp_gf_pcol - spf_gf_pcol,
+  contrast28 = eckp_gf_pcol - consortium_gf_pcol,
+  contrast29 = eckp_gf_dcol - spf_gf_dcol,
+  contrast30 = eckp_gf_dcol - consortium_gf_dcol,
+  contrast31 = spf_gf_pcol - consortium_gf_pcol,
+  contrast32 = spf_gf_dcol - consortium_gf_dcol,
+  levels=design
+)
+```
+
+```{r overlapAnalysis2, include=FALSE, cache=TRUE, cache.lazy=FALSE}
+overlap_results <- sapply(
+  colnames(contrast.matrix),
+  FUN = function(x){
+    samples <- contrastSamples(design, contrast.matrix, x)
+    
+    #full join all dataframes in group1 of the contrast
+    df1 <- purrr::reduce(
+      dm_results[samples[startsWith(names(samples), "A")]],
+      dplyr::inner_join, by = 'chr_base'
+    )
+    
+    #calculate Avgdiff of group1 of the contrast
+    df1$Avgdiff <- rowMeans(
+      df1[,colnames(df1)[startsWith(colnames(df1), "diff")],drop=FALSE]
+    )
+    
+    #calculate Avgsig of group1 of the contrast. (Only true if one element in group1 are true)
+    df1$Avgsig <- rowMeans(
+      df1[,colnames(df1)[startsWith(colnames(df1), "sig")],drop=FALSE]
+    ) >= (1/length(samples[startsWith(names(samples), "A")]))
+    
+    #add '.A' suffix to all columns without chr_base
+    colnames(df1)[colnames(df1) != "chr_base"] <- paste(colnames(df1)[colnames(df1) != "chr_base"],"A",sep=".")
+  
+    #full join all dataframes in group2 of the contrast
+    df2 <- purrr::reduce(
+      dm_results[samples[startsWith(names(samples), "B")]], 
+      dplyr::inner_join, by = 'chr_base'
+    )
+  
+    #calculate Avgdiff of group2 of the contrast
+    df2$Avgdiff <- rowMeans(
+      df2[,colnames(df2)[startsWith(colnames(df2), "diff")],drop=FALSE]
+    )
+    
+    #calculate Avgsig of group2 of the contrast. (Only true if all elements in group1 are true)
+    df2$Avgsig <- rowMeans(
+      df2[,colnames(df2)[startsWith(colnames(df2), "sig")],drop=FALSE]
+    ) >= (1/length(samples[startsWith(names(samples), "B")]))
+    
+    #add '.B' suffix to all columns without chr_base
+    colnames(df2)[colnames(df2) != "chr_base"] <- paste(colnames(df2)[colnames(df2) != "chr_base"],"B",sep=".")
+    
+    #full join group1 and group2
+    df3 <- inner_join(df1, df2, by = "chr_base") %>% 
+      dplyr::select(chr_base, Avgsig.A, Avgdiff.A, Avgsig.B, Avgdiff.B) %>%
+      mutate(
+        color = case_when(
+          Avgsig.A & !Avgsig.B ~ "forestgreen",
+          !Avgsig.A & Avgsig.B ~ "gold2",
+          (Avgsig.A & Avgsig.B) & ((sign(Avgdiff.A) != sign(Avgdiff.B))) ~ "purple",
+          (Avgsig.A & Avgsig.B) & ((sign(Avgdiff.A) > 0) & (sign(Avgdiff.B) > 0)) ~ "red",
+          (Avgsig.A & Avgsig.B) & ((sign(Avgdiff.A) < 0) & (sign(Avgdiff.B) < 0)) ~ "blue"
+        )
+      )
+    
+    
+    df4 <- df3 %>% filter(Avgsig.A | Avgsig.B)
+    df3[df3$chr_base %noin% df4$chr_base, "color"] <- "gray"
+    
+    df3 <- df3 %>% mutate(
+      facet_var = case_when(
+        color == "forestgreen" ~ "A",
+        color == "gold2" ~ "B",
+        color %in% c("red", "blue", "purple") ~ "AB",
+        color == "gray" ~ "Neither"
+      )
+    )
+    
+    pearson <- round(cor(df4$Avgdiff.A, df4$Avgdiff.B, method = "pearson"), 2)
+    size <- nrow(df4) %>% prettyNum(big.mark = ",")
+    maxdiff <- round(max(abs(df3$Avgdiff.A), abs(df3$Avgdiff.B)), 1)
+    fisher <- table(df3$Avgsig.A, df3$Avgsig.B) %>% 
+      fisher.test(alternative = "two.sided")
+    fisherp <- round(fisher$p.value, 2)
+    
+    p <- df3 %>%
+      ggplot(
+        aes(x = Avgdiff.A, y = Avgdiff.B, color = color)
+      ) +
+      geom_point(data = df3[df3$color == "gray", ], alpha = .2, mapping = aes(color = color)) +
+      geom_point(data = df3[df3$color %in% c("forestgreen", "gold2"), ], alpha = .4, mapping = aes(color = color)) +
+      geom_point(data = df3[df3$color %in% c("red", "blue", "purple"), ], alpha = .4, mapping = aes(color = color)) +
+      scale_color_identity() + 
+      scale_x_continuous(breaks = seq(-1,1,.2), limits = c(-0.8, 0.8)) + 
+      scale_y_continuous(breaks = seq(-1,1,.2), limits = c(-0.8, 0.8)) + 
+      labs(
+        title = bquote(bold("Overlap of differential methylation")), 
+        subtitle = bquote(bold("Overlap size:") ~ .(size) ~ bold("Pearson's coef:") ~ .(pearson) ~ bold("Fisher's p-value:") ~ .(fisherp))
+        ) +
+      theme_classic() +
+      theme(axis.text.x = element_text(face = "bold"),
+            axis.text.y = element_text(face = "bold"))
+    
+    df3$facet_var <- factor(df3$facet_var, levels = c("Neither", "B", "A", "AB"))
+    df_counts <- ddply(df3, .(facet_var), summarise, count = length(chr_base))
+    
+    fp <- ggplot(df3, aes(Avgdiff.A, Avgdiff.B)) + 
+      geom_point(alpha = .4, mapping = aes(color=color)) +
+      scale_color_identity() +
+      theme_classic() +
+      facet_wrap(~ facet_var) + 
+      scale_x_continuous(breaks = seq(-1,1,.2), limits = c(-0.8, 0.8)) + 
+      scale_y_continuous(breaks = seq(-1,1,.2), limits = c(-0.8, 0.8)) + 
+      geom_text(data = df_counts, 
+                aes(x = Inf, y = Inf, label = paste("n =", count)),
+                vjust = "top", hjust = "right", inherit.aes = FALSE, fontface="bold") +
+      theme(strip.text = element_text(face = "bold", size = 12),
+            axis.text.x = element_text(face = "bold"),
+            axis.text.y = element_text(face = "bold"))
+    
+    mcols <- as.data.frame(mcols(pj_normal))
+    df3 <- left_join(df3, mcols, by = "chr_base")
+    
+    p2 <- df3 %>%
+      filter(facet_var == "AB") %>%
+       ggplot(mapping = aes(x = color, fill = factor(is_island, levels = c(TRUE, FALSE)))) +
+       geom_bar() +
+       scale_x_discrete(
+         labels = c(
+           red = "Red",
+           blue = "Blue"
+         ),
+         limits = c("red", "blue")
+       ) +
+       scale_fill_manual(name = "CpG Type", values = c("gold", "navy"), labels = c("CpGI", "nonCpGI")) +
+       xlab("Color") +
+       ylab("Frequency") +
+       theme_classic() +
+       theme(
+         text = element_text(face = "bold", family = "Arial"),
+         axis.title.x = element_text(size = 8),
+         axis.title.y = element_text(size = 8),
+         legend.title = element_text(size = 6),
+         legend.text = element_text(size = 6),
+         axis.text = element_text(size = 8),
+         legend.position = "right"
+       ) +
+       guides(
+         color = guide_legend(override.aes = list(size = 2)),
+         shape = guide_legend(override.aes = list(size = 2)),
+         fill = guide_legend(override.aes = list(size = 2))
+       )
+    
+    return(list("df" = df3, "plot" = p, "plot_facet" = fp, "ab_plot" = p2))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+## Sample layout: No treatment, All sampletypes, All microbiomes {style="font-size: 16px;"}
+```{r}
+count <- as.data.frame(colData(pj)) %>%
+  dplyr::select(mouse_id, genotype, treatment, microbiome, suborgan, sampletype) %>%
+  unique() %>%
+  replace_na(list(treatment = "None")) %>%
+  dplyr::count(genotype, treatment, microbiome, suborgan, sampletype)
+
+count <- pivot_wider(
+  count, 
+  names_from = c("genotype", "treatment", "microbiome", "suborgan", "sampletype"), 
+  values_from = "n", 
+  names_glue = "{genotype}.{treatment}.{microbiome}.{suborgan}.{sampletype}"
+)
+
+count %>% 
+  gt() %>% 
+  tab_spanner_delim(
+    delim = "."
+  ) %>%
+    fmt(
+    columns = everything(),
+    fns = function(x) ifelse(x == 0, "—", scales::number(x))
+  ) %>%
+  cols_width(
+    everything() ~ px(60)
+  ) %>% 
+  data_color(
+    domain = c(0:max(count)),
+    method = "numeric",
+    palette = colorRampPalette(c("snow","navy"))(max(count)),
+    na_color = "snow"
+  )
+```
+
+## Sample layout: No treatment, Just normal samples, All microbiomes {style="font-size: 16px;"}
+```{r}
+count <- as.data.frame(colData(pj_normal)) %>%
+  dplyr::select(mouse_id, treatment, microbiome, suborgan, sampletype) %>%
+  unique() %>%
+  replace_na(list(treatment = "None")) %>%
+  dplyr::count(microbiome, treatment, suborgan, sampletype)
+
+count <- pivot_wider(count, names_from = c("treatment", "microbiome", "suborgan", "sampletype"), values_from = "n", names_glue = "{treatment}.{microbiome}.{sampletype}.{suborgan}")
+
+count[is.na(count)] <- 0
+
+count %>% 
+gt() %>% 
+tab_spanner_delim(
+  delim = "."
+) %>%
+  fmt(
+  columns = everything(),
+  fns = function(x) ifelse(x == 0, "—", scales::number(x))
+) %>%
+cols_width(
+  everything() ~ px(60)
+) %>% 
+data_color(
+  domain = c(0:max(count)),
+  method = "numeric",
+  palette = colorRampPalette(c("snow","navy"))(max(count)),
+  na_color = "snow"
+)
+```
+
+## PCA {style="font-size: 20px;"}
+```{r, include=FALSE}
+p_results <- sapply(
+  list("All" = pca_all, "CGI" = pca_cgi, "nonCGI" = pca_noncgi),
+  FUN = function(pca) {
+    p1 <- ggplot(data = pca$rotated, aes(PC1, PC2, color = factor(pca$metadata$microbiome,
+      levels = c(
+        "gf", "consortium",
+        "spf", "eckp"
+      )
+    ))) +
+      geom_point(size = 10, alpha = .9) +
+      scale_color_manual(
+        name = "Microbiota",
+        values = c("skyblue", "blueviolet", "gold3", "firebrick2"),
+        labels = c("GF", "Consortium", "SPF", "ECKP")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 5)))
+
+    p2 <- ggplot(data = pca$rotated, aes(PC1, PC2, color = pca$metadata$suborgan)) +
+      geom_point(size = 10, alpha = .9) +
+      scale_color_manual(
+        name = "Tissue Type",
+        values = c("forestgreen", "orange2"),
+        labels = c("Distal", "Proximal")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) + 
+      guides(color = guide_legend(override.aes = list(size = 5)))
+    
+    
+    combined <- ggplot(data = pca$rotated, aes(PC1, PC2, color = factor(pca$metadata$microbiome,
+      levels = c(
+        "gf", "consortium",
+        "spf", "eckp"
+      )
+    ),
+    shape = pca$metadata$suborgan)) +
+      geom_point(size = 9, alpha = .9) +
+      scale_color_manual(
+        name = "Microbiota",
+        values = c("skyblue", "blueviolet", "gold3", "firebrick2"),
+        labels = c("GF", "Consortium", "SPF", "ECKP")
+      ) +
+      scale_shape_manual(
+        name = "Tissue Type",
+        values = c(16, 15),
+        labels = c("Distal", "Proximal")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 10),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 5)),
+             shape = guide_legend(override.aes = list(size = 5)))
+
+
+    p3 <- plot_ly(
+      data = pca$rotated, x = ~PC1, y = ~PC3, z = ~PC2,
+      color = pca$metadata$microbiome,
+      text = paste(
+        rownames(pca$metadata),
+        pca$metadata$microbiome,
+        pca$metadata$sampletype,
+        pca$metadata$strain,
+        pca$metadata$age
+      )
+    ) %>%
+      layout(
+        scene = list(
+          xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]], 2), "%", sep = "")),
+          yaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]], 2), "%", sep = "")),
+          zaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]], 2), "%", sep = ""))
+        )
+      ) %>%
+      add_markers(
+        symbol = pca$metadata$suborgan,
+        symbols = c("circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x")
+      )
+
+    return(list("microbiome" = p1, "suborgan" = p2, "combined" = combined, "microbiome3d" = p3))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+### All sites
+::: panel-tabset
+### Microbiome (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$All$microbiome
+```
+
+### Suborgan (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$All$suborgan
+```
+
+### Combined 
+```{r, fig.height=7, fig.width=8, dpi=300, out.width="50%"}
+p_results$All$combined
+```
+
+### Microbiome-Suborgan (3d) 
+```{r}
+p_results$All$microbiome3d
+```
+:::
+
+## PCA {style="font-size: 20px;"}
+### nonCGI
+::: panel-tabset
+### Microbiome (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$nonCGI$microbiome
+```
+
+### Suborgan (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$nonCGI$suborgan
+```
+
+### Combined 
+```{r, fig.height=7, fig.width=8, dpi=300, out.width="50%"}
+p_results$nonCGI$combined
+```
+
+### Microbiome-Suborgan (3d) 
+```{r}
+p_results$nonCGI$microbiome3d
+```
+:::
+
+## PCA {style="font-size: 20px;"}
+### CGI
+::: panel-tabset
+### Microbiome (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$CGI$microbiome
+```
+
+### Suborgan (2d) 
+```{r  fig.width=8, fig.height=7, dpi=300, out.width="50%"}
+p_results$CGI$suborgan
+```
+
+### Combined 
+```{r, fig.height=7, fig.width=8, dpi=300, out.width="50%"}
+p_results$CGI$combined
+```
+
+### Microbiome-Suborgan (3d) 
+```{r}
+p_results$CGI$microbiome3d
+```
+:::
+
+## Heatmap {style="font-size: 16px;"}
+#### Using top 1% most variable sites {style="font-size: 16px;"}
+```{r heatmap, fig.height=10, fig.width=20, cache=TRUE}
+#setup legend and annotation parameters
+md <- colData(pj_normal)[, c("suborgan", "microbiome"), drop = FALSE]
+md$microbiome <- factor(md$microbiome, levels = c("gf", "consortium", "spf", "eckp"))
+md$suborgan <- factor(md$suborgan, levels = c("DCOL", "PCOL"))
+
+color_palette <- colorRamp2(c(0,.25,.5,.75,1), c("navy","gray95","gray100","gray95","gold2"))
+
+color_mapping <- list(
+  microbiome = c(
+    "eckp" = "firebrick2",
+    "consortium" = "blueviolet",
+    "spf" = "gold3",
+    "gf" = "skyblue"
+  ),
+  suborgan = c(
+    "PCOL" = "khaki",
+    "DCOL" = "forestgreen"
+  )
+)
+
+legend_param <- list(
+  suborgan = list(labels = c("Distal", "Proximal"), 
+                  title_gp = gpar(fontsize = 15, fontface = "bold"), 
+                  labels_gp = gpar(fontsize = 12)),
+  microbiome = list(labels = c("GF", "Consortium", "SPF", "ECKP"), 
+                    title_gp = gpar(fontsize = 15, fontface = "bold"), 
+                    labels_gp = gpar(fontsize = 12))
+)
+
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+#Calculate variance for each cpg and take top 1%
+#Take top 1% of All sites
+var <- order(matrixStats::rowVars(meth, na.rm = TRUE), decreasing = TRUE)
+ht_meth <- meth[head(var, nrow(meth)/100),]
+se_subset <- subset(pj_normal, chr_base %in% rownames(ht_meth))
+
+ht1 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "meth",
+  column_title = "All Sites",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p1 <- draw(
+  ht1, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Calculate variance for each cpg and take top 1%
+#Take top 1% of Non CGI
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+sites <- rownames(subset(pj_normal, !is_island))
+ht_meth <- meth[sites,]
+var <- order(matrixStats::rowVars(ht_meth, na.rm = TRUE), decreasing = TRUE)
+ht_meth <- meth[head(var, nrow(ht_meth)/100),]
+
+ht2 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "meth",
+  column_title = "nonCGI",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p2 <- draw(
+  ht2, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Calculate variance for each cpg and take top 1%
+#Take top 1% of Non CGI
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+sites <- rownames(subset(pj_normal, is_island))
+ht_meth <- meth[sites,]
+var <- order(matrixStats::rowVars(ht_meth, na.rm = TRUE), decreasing = TRUE)
+ht_meth <- meth[head(var, nrow(ht_meth)/100),]
+
+ht3 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "Methylation",
+  column_title = "CGI",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p3 <- draw(
+  ht3, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Draw legend separate
+lgd1 <- Legend(col_fun = color_palette, 
+               at = c(0,0.5,1),
+               title = "Methylation",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               legend_height = unit(5, "cm"),
+               grid_width = unit(7, "mm"))
+
+lgd2 <- Legend(labels = c("Distal", "Proximal"), 
+               legend_gp = gpar(fill=c("khaki", "forestgreen")), 
+               title = "Tissue Type",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               grid_height = unit(1, "cm"), 
+               grid_width = unit(7, "mm"))
+
+lgd3 <- Legend(labels = c("GF", "Consortium", "SPF", "ECKP"),
+               legend_gp = gpar(fill=c("skyblue", "blueviolet", "gold3", "firebrick2")), 
+               title = "Microbiota",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               grid_height = unit(1, "cm"), 
+               grid_width = unit(7, "mm"))
+
+pd = packLegend(list = list(lgd1, lgd2, lgd3)) %>% draw() %>% grid.grabExpr()
+
+p <- wrap_plots(list(p1, p2, p3, pd), ncol = 4, widths = c(1,1,1,.27)) + 
+  patchwork::plot_annotation(tag_levels = list(c("A", "B", "C")))
+
+p & theme(plot.tag = element_text(size = 32, face = "bold", hjust = 0, vjust = 2))
+
+```
+
+## Proposed Figure 1 {style="font-size: 16px;"}
+```{r figure 1, fig.height=8, fig.width=24, dpi=300}
+p1 <- p_results$All$combined + ggtitle("All Sites")
+p2 <- p_results$nonCGI$combined + ggtitle("nonCGI")
+p3 <- p_results$CGI$combined + ggtitle("CGI")
+
+p <-   p1 + p2 + p3 + plot_layout(guides = "collect")
+
+p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20))
+```
+
+## Differential Methylation using `r prettyNum(nrow(pj_normal), big.mark = ",", scientific = FALSE)` sites {style="font-size: 16px;"}
+#### Comparing PCOL vs DCOL {style="font-size: 16px;"}
+```{r, include=FALSE}
+p_results <- sapply(
+  names(dm_results)[1:5],
+  FUN = function(x){
+    df <- dm_results[[x]];
+    
+    df_plot <- df
+    p <- coriell::plot_volcano(df_plot, x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1) + 
+      labs(title = "All sites", 
+           caption = "") + 
+      xlab("diffMeth") + 
+      scale_x_continuous(limits = c(-1,1)) +
+      theme(plot.title = element_text(size = 20))
+  
+    df_plot <- df[!df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value,
+                                   n = nrow(df_plot),
+                                   method = "fdr")
+    p1 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "nonCGI", 
+           caption = "") + 
+      xlab("diffMeth") + 
+      scale_x_continuous(limits = c(-1,1)) +
+      theme(plot.title = element_text(size = 20))
+    
+    df_plot <- df[df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value, 
+                                   n = nrow(df_plot), 
+                                   method = "fdr")
+    p2 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "CGI",
+           caption = "") + 
+      xlab("diffMeth") + 
+      scale_x_continuous(limits = c(-1,1)) +
+      theme(plot.title = element_text(size = 20))
+    
+    combined <-  (p + p1 + p2)  &
+      theme(
+        legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20, face = "bold"),
+        axis.text = element_text(face = "bold"))
+    
+    
+    return(list("all" = p, 
+                "non-islands" = p1, 
+                "islands" = p2, 
+                "combined" = wrap_elements(combined)))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+::: panel-tabset
+### Volcano plot 
+```{r fig.width=30, fig.height=30, dpi = 300}
+p1 <- p_results[["by_suborgan"]]$combined
+p2 <- p_results[["gf_by_suborgan"]]$combined
+p3 <- p_results[["consortium_by_suborgan"]]$combined
+p4 <- p_results[["spf_by_suborgan"]]$combined
+p5 <- p_results[["eckp_by_suborgan"]]$combined
+
+p <- p1 / p2 / p3 / p4 / p5
+p + 
+  patchwork::plot_annotation(tag_levels = list(c("PCOL-DCOL","GF:PCOL-DCOL", "CONS:PCOL-DCOL", "SPF:PCOL-DCOL","ECKP:PCOL-DCOL"))) &
+  theme(plot.tag = element_text(size = 25, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20, face = "bold"),
+        axis.text = element_text(face = "bold"))
+```
+
+### Hyper vs Hypo 
+```{r, fig.width=30, fig.height=8, include=FALSE}
+df_long <- pivot_longer(contrasts, cols = ends_with("by_suborgan"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[1:5])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island")) %>% filter(sig == TRUE)
+df_count$contrast <- factor(df_count$contrast, levels = c("by_suborgan","gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan"))
+
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+xticks <- abs(seq(-20000,20000,2500))
+xticks[xticks %noin% abs(seq(-20000,20000,5000))] <- ""
+
+p3 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("All Sites") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p1 <- ggplot(df_count %>% filter(is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("CGI") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p2 <- ggplot(df_count %>% filter(!is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("nonCGI") + 
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p <- p3 + p2 + p1 + plot_layout(guides = "collect")
+
+p <- p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        title = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 16),
+        legend.text = element_text(size = 16))
+p
+```
+
+### Repetitive Elements by Contrast
+```{r, fig.width=30, fig.height=8, include=FALSE}
+df_long <- pivot_longer(contrasts, cols = ends_with("by_suborgan"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[1:5])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island", "is_rep_elem")) %>% filter(sig & is_rep_elem)
+df_count$contrast <- factor(df_count$contrast, levels = c("by_suborgan","gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan"))
+
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+xticks <- abs(seq(-20000,20000,2500))
+xticks[xticks %noin% abs(seq(-20000,20000,5000))] <- ""
+
+p3 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("All Sites") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p1 <- ggplot(df_count %>% filter(is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("CGI") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p2 <- ggplot(df_count %>% filter(!is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("gf_by_suborgan","consortium_by_suborgan", "spf_by_suborgan", "eckp_by_suborgan")) + 
+  scale_y_continuous(breaks = seq(-20000,20000,2500), limits = c(-20000, 20000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Tissue Type") +
+  ggtitle("nonCGI") + 
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 10)),
+         shape = guide_legend(override.aes = list(size = 10)))
+
+p <- p3 + p2 + p1 + plot_layout(guides = "collect")
+
+p <- p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        title = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 16),
+        legend.text = element_text(size = 16))
+p
+```
+
+
+### Odds Ratio 
+```{r, fig.width=10, fig.height=5}
+test_results <- sapply(
+  names(dm_results[1:5]),
+  FUN = function(x){
+    data <- dm_results[[x]]
+    data$is_island <- factor(data$is_island, levels = c(FALSE, TRUE))
+    data$sig <- factor(data$sig, levels = c(TRUE, FALSE))
+    table <- table(data$is_island, data$sig)
+    table <- table[c("FALSE", "TRUE"),c("TRUE", "FALSE")]
+    test <- fisher.test(table, alternative = "two.sided")
+    
+    p <- ggplot(data) +
+      geom_mosaic(aes(x = sig, fill=type)) + 
+      ggtitle(
+            label = "Non-cpgi vs cpgi vs differential methylation significance",
+            subtitle = sprintf("Fisher's exact p-value: %s, Odds ratio: %s, CI: %s/%s", 
+                       test$p.value, round(test$estimate, 3), 
+                       round(test$conf.int[1], 3), 
+                       round(test$conf.int[2], 3))
+      )
+    
+    return(list("test" = test, "table" = table, "plot" = p))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+
+or_df <- data.frame(
+  or = as.vector(sapply(test_results, function(x){x$test$estimate})), 
+  ciLo = as.vector(sapply(test_results, function(x){x$test$conf.int[1]})),
+  ciHi = as.vector(sapply(test_results, function(x){x$test$conf.int[2]})),
+  contrast = names(test_results),
+  row.names = names(test_results)
+)
+
+or_df <- or_df[order(or_df$or),]
+p <- ggplot(or_df, aes(x = or, 
+                       y = contrast)) +
+  geom_errorbarh(
+    aes(xmax = ciHi, xmin = ciLo), 
+    size = 1.5, 
+    height = .1, 
+    color = "gray50"
+  ) + 
+  geom_point(size = 6, color = "orange") +
+  geom_vline(aes(xintercept = 1), size = .5, linetype = "dashed") +
+  scale_x_continuous(breaks = seq(0,max(or_df$ciHi),1)) +
+  scale_y_discrete(labels = c(by_suborgan = "All", 
+                              gf_by_suborgan = "GF", 
+                              consortium_by_suborgan = "Consortium",
+                              spf_by_suborgan = "SPF",
+                              eckp_by_suborgan = "ECKP"),
+                   limits = c("eckp_by_suborgan","spf_by_suborgan", "consortium_by_suborgan", "gf_by_suborgan")) +
+  xlab("Odds Ratio") + 
+  ylab("") + 
+  theme_classic() +
+  theme(axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        axis.text = element_text(size = 16, face = "bold"),
+        text = element_text(family = "Arial"))
+
+p
+```
+
+### diffMeth Violin 
+```{r, fig.height=10, fig.width=20}
+data <- dm_results[["by_suborgan"]] %>% filter(sig == TRUE)
+se_subset <- subset(pj_normal, chr_base %in% data$chr_base)
+#Get only samples that have a duplicate
+meth_subset <- meth[data$chr_base,get_Duplicates(se_subset$mouse_id)]
+se_subset <- se_subset[data$chr_base,get_Duplicates(se_subset$mouse_id)]
+
+group1 <- meth_subset[,se_subset$suborgan == "PCOL"]
+group2 <- meth_subset[,se_subset$suborgan == "DCOL"]
+
+diffMeth <- (group1 - group2)
+colnames(diffMeth) <- unique(se_subset$mouse_id)
+
+df_melt <- reshape2::melt(diffMeth)
+names(df_melt) <- c("chr_base", "mouse_id", "diffMeth")
+
+col_df <- colData(se_subset)[duplicated(se_subset$mouse_id), 
+                         c("microbiome", "mouse_id"), drop = FALSE]
+
+df_melt <- left_join(data.frame(col_df), df_melt, by = "mouse_id")
+
+p <- ggplot(df_melt, aes(x=microbiome, y=diffMeth, color = microbiome)) + 
+  geom_violin() + 
+  geom_boxplot(width=0.1) + 
+  coriell::theme_coriell() +
+  geom_hline(aes(yintercept = 0), size = .25, linetype = "dashed") + 
+  NULL
+
+p
+```
+
+### Boxplot of Sidedness Sites
+```{r, fig.height=8, fig.width=16}
+#Get only samples that have a duplicate
+meth_subset <- meth[,get_Duplicates(pj_normal$mouse_id)]
+md <- colData(pj_normal)[get_Duplicates(pj_normal$mouse_id),] %>% as.data.frame()
+md$microbiome_suborgan <- paste0(md$microbiome, "_", md$suborgan)
+
+a <- dm_results$gf_by_suborgan %>% filter(sig & status == "hyper") %>% pull(chr_base)
+b <- dm_results$consortium_by_suborgan %>% filter(sig & status == "hyper") %>% pull(chr_base)
+
+sites <- a
+
+meth_subset <- meth_subset[sites,] %>% as_tibble(rownames = "row")
+
+meth_longer <- meth_subset %>% pivot_longer(cols = -row)
+
+for(name in unique(meth_longer$name)){
+  meth_longer[meth_longer$name == name,"microbiome_suborgan", drop = FALSE] <- md[name,"microbiome_suborgan"]
+  meth_longer[meth_longer$name == name,"suborgan", drop = FALSE] <- md[name,"suborgan"]
+  meth_longer[meth_longer$name == name,"microbiome", drop = FALSE] <- md[name,"microbiome"]
+}
+
+meth_longer <- meth_longer %>% mutate(
+  status = case_when(
+    value > .75 ~ "hyper",
+    value < .25 ~ "hypo",
+    TRUE ~ "middle"
+  )
+)
+
+meth_longer$suborgan <- factor(meth_longer$suborgan, levels = c("PCOL", "DCOL"))
+meth_longer$microbiome <- factor(meth_longer$microbiome, levels = c("gf", "consortium", 
+                                                                    "spf", "eckp"))
+meth_longer$status <- factor(meth_longer$status, levels = c("hyper", "middle", "hypo"))
+
+#Comparing microbiome within tissue
+my_comparisons <- list(c("PCOL.gf", "DCOL.gf"), c("PCOL.consortium", "DCOL.consortium"),
+                       c("PCOL.spf", "DCOL.spf"), c("PCOL.eckp", "DCOL.eckp"))
+p1 <- ggplot(meth_longer, mapping = aes(x = interaction(microbiome, suborgan), 
+                                  y = value, 
+                                  fill = microbiome)) + 
+  geom_violin(linewidth = 1.25, alpha = .5) +
+  geom_boxplot(width = 0.3, linewidth = 1.25,  show.legend = FALSE) + 
+  scale_color_manual(values = c("yellow", "gray", "navy")) +
+  scale_fill_manual(values = c("skyblue", "blueviolet", "gold3", "firebrick2"),
+                    name = "Microbiota", 
+                    labels = c("gf" = "GF", "consortium" = "Consortium", "spf" = "SPF", "eckp" = "ECKP")) +
+  scale_x_discrete(labels = c("gf.PCOL" = "GF Proximal", "gf.DCOL" = "GF Distal",
+                              "consortium.PCOL" = "Consortium Proximal", "consortium.DCOL" = "Consortium Distal",
+                              "spf.PCOL" = "SPF Proximal", "spf.DCOL" = "SPF Distal",
+                              "eckp.PCOL" = "ECKP Proximal", "eckp.DCOL" = "ECKP Distal")) +
+  guides(x = ggh4x::guide_axis_nested(delim = " ")) +
+  theme_classic() +
+  xlab("Tissue Type") +
+  ylab("Methylation (%)") +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 25, face = "bold"),
+    axis.title.x = element_text(size = 22, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    legend.text = element_text(size = 20),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(face = "bold"))
+
+#Comparing tissue within microbiome
+my_comparisons <- list(c("PCOL.gf", "DCOL.gf"), c("PCOL.consortium", "DCOL.consortium"),
+                       c("PCOL.spf", "DCOL.spf"), c("PCOL.eckp", "DCOL.eckp"))
+p2 <- ggplot(meth_longer, mapping = aes(x = interaction(suborgan, microbiome), 
+                                  y = value, 
+                                  fill = suborgan)) + 
+  geom_violin(linewidth = 1.25, alpha = 1) +
+  geom_boxplot(width = 0.2, linewidth = 1.25, fill = "white", show.legend = FALSE) + 
+  scale_color_manual(values = c("yellow", "gray", "navy")) +
+  scale_fill_manual(values = c("khaki", "forestgreen"),
+                    name = "Tissue Type", 
+                    labels = c("PCOL" = "Proximal", "DCOL" = "Distal")) +
+  ggpubr::stat_compare_means(comparisons = my_comparisons, label.y = c(1, 1, 1, 1), label = "p.signif", size = 5) +
+  scale_x_discrete(labels = c("PCOL.gf" = "Proximal GF", "DCOL.gf" = "Distal GF", 
+                              "PCOL.consortium" = "Proximal Consortium", "DCOL.consortium" = "Distal Consortium",
+                              "PCOL.spf" = "Proximal SPF", "DCOL.spf" = "Distal SPF",
+                              "PCOL.eckp" = "Proximal ECKP", "DCOL.eckp" = "Distal ECKP")) + 
+  guides(x = ggh4x::guide_axis_nested(delim = " ")) +
+  theme_classic() +
+  xlab("Microbiome") +
+  ylab("Methylation (%)") +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 25, face = "bold"),
+    axis.title.x = element_text(size = 22, face = "bold"),
+    axis.title.y = element_text(size = 22, face = "bold"),
+    legend.text = element_text(size = 20),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(face = "bold", color = "black"))
+
+p2
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing PCOL vs DCOL {style="font-size: 16px;"}
+::: panel-tabset
+### (CONS: PCOL vs DCOL) &#x222A; (SPF: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast1$plot +
+  xlab("diffMeth A (CONS: PCOL vs DCOL)") + ylab("diffMeth B (SPF: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast1$plot_facet
+
+p3 <- overlap_results$contrast1$ab_plot
+
+p4 <- overlap_results$contrast1$plot_facet +
+  xlab("diffMeth A (CONS: PCOL vs DCOL)") + 
+  ylab("diffMeth B (SPF: PCOL vs DCOL)") + 
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+
+p1 + p4
+```
+
+### (CONS: PCOL vs DCOL) &#x222A; (ECKP: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast2$plot +
+  xlab("diffMeth A (CONS: PCOL vs DCOL)") + ylab("diffMeth B (ECKP: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast2$plot_facet
+
+p3 <- overlap_results$contrast2$ab_plot
+
+p4 <- overlap_results$contrast2$plot_facet +
+  xlab("diffMeth A (CONS: PCOL vs DCOL)") + 
+  ylab("diffMeth B (ECKP: PCOL vs DCOL)") + 
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (GF: PCOL vs DCOL) &#x222A; (CONS: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast3$plot +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + ylab("diffMeth B (CONS: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast3$plot_facet
+
+p3 <- overlap_results$contrast3$ab_plot
+
+p4 <- overlap_results$contrast3$plot_facet +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + 
+  ylab("diffMeth B (CONS: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (GF: PCOL vs DCOL) &#x222A; (SPF: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast5$plot +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + ylab("diffMeth B (SPF: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast5$plot_facet
+
+p3 <- overlap_results$contrast5$ab_plot
+
+p4 <- overlap_results$contrast5$plot_facet +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + 
+  ylab("diffMeth B (SPF: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (GF: PCOL vs DCOL) &#x222A; (ECKP: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast4$plot +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + ylab("diffMeth B (ECKP: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast4$plot_facet
+
+p3 <- overlap_results$contrast4$ab_plot
+
+p4 <- overlap_results$contrast4$plot_facet +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + 
+  ylab("diffMeth B (ECKP: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (ECKP: PCOL vs DCOL) &#x222A; (SPF: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast6$plot +
+  xlab("diffMeth A (ECKP: PCOL vs DCOL)") + ylab("diffMeth B (SPF: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast6$plot_facet
+
+p3 <- overlap_results$contrast6$ab_plot
+
+p4 <- overlap_results$contrast6$plot_facet +
+  xlab("diffMeth A (ECKP: PCOL vs DCOL)") + 
+  ylab("diffMeth B (SPF: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (GF: PCOL vs DCOL) &#x222A; ((CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast7$plot +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + ylab("diffMeth B (CONS/SPF/ECKP: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast7$plot_facet
+
+p3 <- overlap_results$contrast7$ab_plot
+
+p4 <- overlap_results$contrast7$plot_facet +
+  xlab("diffMeth A (GF: PCOL vs DCOL)") + 
+  ylab("diffMeth B (CONS/SPF/ECKP: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (PCOL vs DCOL) &#x222A; (GF: PCOL vs DCOL) 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast8$plot +
+  xlab("diffMeth A (PCOL vs DCOL)") + ylab("diffMeth B (GF: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast8$plot_facet
+
+p3 <- overlap_results$contrast8$ab_plot
+
+p4 <- overlap_results$contrast8$plot_facet +
+  xlab("diffMeth A (PCOL vs DCOL)") + 
+  ylab("diffMeth B (GF: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### (PCOL vs DCOL) &#x222A; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast9$plot +
+  xlab("diffMeth A (PCOL vs DCOL)") + ylab("diffMeth B (GF/CONS/SPF/ECKP: PCOL vs DCOL)")
+
+p2 <- overlap_results$contrast9$plot_facet
+
+p3 <- overlap_results$contrast9$ab_plot
+
+p4 <- overlap_results$contrast9$plot_facet +
+  xlab("diffMeth A (PCOL vs DCOL)") + 
+  ylab("diffMeth B (GF/CONS/SPF/ECKP: PCOL vs DCOL)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing PCOL vs DCOL {style="font-size: 16px;"}
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+library(UpSetR)
+df <- contrasts
+df[, 6:10] <- sapply(df[, 6:10], as.numeric)
+upset(df[,c(1,6:10)], nsets = 6, mb.ratio = c(0.55, 0.45), order.by = "degree", keep.order = TRUE)
+```
+
+## GO enrichment analysis {style="font-size: 16px;"} 
+#### Using sites significant in PCOL vs DCOL {style="font-size: 16px;"}
+::: panel-tabset
+### PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+go_results1$by_suborgan$barplot
+```
+
+### GF: PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+go_results1$gf_by_suborgan$barplot
+```
+
+### CONS: PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+go_results1$consortium_by_suborgan$barplot
+```
+
+### SPF: PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+go_results1$spf_by_suborgan$barplot
+```
+
+### ECKP: PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+go_results1$eckp_by_suborgan$barplot
+```
+
+### GF|CONS: PCOL-DCOL
+```{r,fig.width=20, fig.height=10}
+a <- dm_results$gf_by_suborgan
+b <- dm_results$consortium_by_suborgan
+
+universe <- full_join(a,b, 
+               by = c("chr_base", colnames(a)[startsWith(colnames(a), "is_")], "annot.gene_id", "annot.symbol"), 
+               suffix = c(".gf",".cons"))
+
+#remove observations where no gene id is found
+universe <- universe[!lapply(universe$annot.gene_id, isEmpty) %>% unlist(),]
+
+c <- universe %>%
+  filter((sig.gf | sig.cons)) %>%
+  dplyr::group_by(chr_base) %>%
+  dplyr::mutate(max_diff = max(c(diff.gf, diff.cons))) %>%
+  unnest(c("annot.gene_id"))
+
+#remove observations where no gene id is found
+c <- c[!lapply(c$annot.gene_id, isEmpty) %>% unlist(),]
+
+universeList <- universe$annot.gene_id
+geneList <- c$annot.gene_id
+
+go_result <- clusterProfiler::enrichGO(
+  gene = geneList,
+  universe = universeList,
+  OrgDb = "org.Mm.eg.db",
+  ont = "BP",
+  keyType = "ENTREZID",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "fdr"
+)
+
+geneList <- c$max_diff
+names(geneList) <- c$annot.gene_id
+geneList <- sort(geneList, decreasing = TRUE)
+
+gse_results <- clusterProfiler::gseGO(
+  geneList = geneList,
+  OrgDb = "org.Mm.eg.db",
+  keyType = "ENTREZID",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "fdr",
+  verbose = FALSE
+)
+
+dotplot(go_result)
+dotplot(gse_results)
+
+annotated_gr <- annotatr::annotate_regions(granges(pj_normal), annotations)
+```
+
+```{r}
+annotations <- annotatr::build_annotations(
+  "mm10", c("mm10_genes_promoters", "mm10_cpgs")
+)
+
+annotated <- annotatr::annotate_regions(
+  regions = granges(pj_normal),
+  annotations = annotations,
+  ignore.strand = TRUE,
+  quiet = FALSE
+) %>% 
+  data.frame()
+
+annotated_transformed <- annotated %>%
+  group_by(chr_base) %>%
+  distinct(chr_base, annot.gene_id, .keep_all = TRUE)
+
+test <- annotated_transformed %>% 
+  filter(annot.strand == "+")
+rowData(pj_normal)$annot.gene_id_pos <- ""
+rowData(pj_normal)[test$chr_base,]$annot.gene_id_pos <- test$annot.gene_id
+
+test <- annotated_transformed %>% 
+  filter(annot.strand == "-")
+rowData(pj_normal)$annot.gene_id_neg <- ""
+rowData(pj_normal)[test$chr_base,]$annot.gene_id_neg <- test$annot.gene_id
+
+annotated_transformed <- annotated %>%
+  group_by(chr_base) %>%
+  distinct(chr_base, annot.symbol, .keep_all = TRUE)
+
+test <- annotated_transformed %>% 
+  filter(annot.strand == "+")
+rowData(pj_normal)$annot.symbol_pos <- ""
+rowData(pj_normal)[test$chr_base,]$annot.symbol_pos <- test$annot.symbol
+
+test <- annotated_transformed %>% 
+  filter(annot.strand == "-")
+rowData(pj_normal)$annot.symbol_neg <- ""
+rowData(pj_normal)[test$chr_base,]$annot.symbol_neg <- test$annot.symbol
+
+test <- annotated %>% 
+  filter(str_detect(annot.id, "promoter") & annot.strand == "+") %>% 
+  pull(chr_base) %>% 
+  unique()
+rowData(pj_normal)$is_promoter_pos <- ifelse(
+  rowData(pj_normal)$chr_base %in% test, TRUE, FALSE
+)
+
+test <- annotated %>% 
+  filter(str_detect(annot.id, "promoter") & annot.strand == "-") %>% 
+  pull(chr_base) %>% 
+  unique()
+
+rowData(pj_normal)$is_promoter_neg <- ifelse(
+  rowData(pj_normal)$chr_base %in% test, TRUE, FALSE
+)
+```
+
+:::
+
+
+
+## Heatmap {style="font-size: 16px;"}
+#### Using side specific sites {style="font-size: 16px;"}
+```{r heatmap, fig.height=10, fig.width=20, cache=TRUE}
+#Get side sites and subset summarized experiment
+sites <- contrasts %>% 
+  filter(gf_by_suborgan) %>% 
+  pull(chr_base)
+
+se_subset <- pj_normal[sites,]
+
+#setup legend and annotation parameters
+md <- colData(pj_normal)[, c("suborgan", "microbiome"), drop = FALSE]
+md$microbiome <- factor(md$microbiome, levels = c("gf", "consortium", "spf", "eckp"))
+md$suborgan <- factor(md$suborgan, levels = c("DCOL", "PCOL"))
+
+color_palette <- colorRamp2(c(0,.25,.5,.75,1), c("navy","royalblue","gray95","gold2","orangered"))
+
+color_mapping <- list(
+  microbiome = c(
+    "eckp" = "firebrick2",
+    "consortium" = "blueviolet",
+    "spf" = "gold3",
+    "gf" = "skyblue"
+  ),
+  suborgan = c(
+    "PCOL" = "khaki",
+    "DCOL" = "forestgreen"
+  )
+)
+
+legend_param <- list(
+  suborgan = list(labels = c("Distal", "Proximal"), 
+                  title_gp = gpar(fontsize = 15, fontface = "bold"), 
+                  labels_gp = gpar(fontsize = 12)),
+  microbiome = list(labels = c("GF", "Consortium", "SPF", "ECKP"), 
+                    title_gp = gpar(fontsize = 15, fontface = "bold"), 
+                    labels_gp = gpar(fontsize = 12))
+)
+
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+#Use all side sites to make heatmap
+ht_meth <- meth[rownames(se_subset),]
+
+ht1 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "meth",
+  column_title = "All Sites",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p1 <- draw(
+  ht1, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Calculate variance for each cpg and take top 1%
+#Take top 1% of Non CGI
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+
+ht_meth <- meth[rownames(subset(se_subset, !is_island)),]
+
+ht2 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "meth",
+  column_title = "nonCGI",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p2 <- draw(
+  ht2, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Calculate variance for each cpg and take top 1%
+#Take top 1% of Non CGI
+col_ha <- HeatmapAnnotation(
+  df = md,
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type", "Microbiota"),
+  show_annotation_name = c(suborgan = FALSE, microbiome = FALSE),
+  show_legend = c(FALSE,FALSE)
+)
+
+ht_meth <- meth[rownames(subset(se_subset, is_island)),]
+
+ht3 <- ComplexHeatmap::Heatmap(ht_meth,
+  name = "Methylation",
+  column_title = "CGI",
+  column_title_gp = gpar(fontsize = 25, fontface = "bold"),
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p3 <- draw(
+  ht3, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Draw legend separate
+lgd1 <- Legend(col_fun = color_palette, 
+               at = c(0,0.5,1),
+               title = "Methylation",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               legend_height = unit(5, "cm"),
+               grid_width = unit(7, "mm"))
+
+lgd2 <- Legend(labels = c("Distal", "Proximal"), 
+               legend_gp = gpar(fill=c("khaki", "forestgreen")), 
+               title = "Tissue Type",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               grid_height = unit(1, "cm"), 
+               grid_width = unit(7, "mm"))
+
+lgd3 <- Legend(labels = c("GF", "Consortium", "SPF", "ECKP"),
+               legend_gp = gpar(fill=c("skyblue", "blueviolet", "gold3", "firebrick2")), 
+               title = "Microbiota",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               grid_height = unit(1, "cm"), 
+               grid_width = unit(7, "mm"))
+
+pd = packLegend(list = list(lgd1, lgd2, lgd3)) %>% draw() %>% grid.grabExpr()
+
+p <- wrap_plots(list(p1, p2, p3, pd), ncol = 4, widths = c(1,1,1,.27)) + 
+  patchwork::plot_annotation(tag_levels = list(c("A", "B", "C")))
+
+p & theme(plot.tag = element_text(size = 32, face = "bold", hjust = 0, vjust = 2))
+```
+
+## PCA {style="font-size: 16px;"}
+#### Using side specific sites {style="font-size: 16px;"}
+```{r, fig.height=6, fig.width=15, dpi=300, out.width="75%"}
+p_results <- sapply(
+  list("noSide" = pca_noside, "noSideCGI" = pca_noside_cgi, "noSidenonCGI" = pca_noside_noncgi, 
+       "side" = pca_side, "sideCGI" = pca_side_cgi, "sidenonCGI" = pca_side_noncgi),
+  FUN = function(pca) {
+    p1 <- ggplot(data = pca$rotated, aes(PC1, PC2, color = factor(pca$metadata$microbiome,
+      levels = c(
+        "gf", "consortium",
+        "spf", "eckp"
+      )
+    ))) +
+      geom_point(size = 10, alpha = .9) +
+      scale_color_manual(
+        name = "Microbiota",
+        values = c("skyblue", "blueviolet", "gold3", "firebrick2"),
+        labels = c("GF", "Consortium", "SPF", "ECKP")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 5)))
+
+    p2 <- ggplot(data = pca$rotated, aes(PC1, PC2, color = pca$metadata$suborgan)) +
+      geom_point(size = 10, alpha = .9) +
+      scale_color_manual(
+        name = "Tissue Type",
+        values = c("forestgreen", "orange2"),
+        labels = c("Distal", "Proximal")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) + 
+      guides(color = guide_legend(override.aes = list(size = 5)))
+    
+    
+    combined <- ggplot(data = pca$rotated, aes(PC1, PC2, color = factor(pca$metadata$microbiome,
+      levels = c(
+        "gf", "consortium",
+        "spf", "eckp"
+      )
+    ),
+    shape = pca$metadata$suborgan)) +
+      geom_point(size = 9, alpha = .9) +
+      scale_color_manual(
+        name = "Microbiota",
+        values = c("skyblue", "blueviolet", "gold3", "firebrick2"),
+        labels = c("GF", "Consortium", "SPF", "ECKP")
+      ) +
+      scale_shape_manual(
+        name = "Tissue Type",
+        values = c(16, 15),
+        labels = c("Distal", "Proximal")
+      ) +
+      labs(
+        y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+        x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+      ) +
+      theme_classic() +
+      theme(
+        text = element_text(face = "bold", family = "Arial"),
+        legend.title = element_text(size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 10),
+        axis.text = element_text(size = 12),
+        legend.position = "bottom"
+      ) +
+      guides(color = guide_legend(override.aes = list(size = 5)),
+             shape = guide_legend(override.aes = list(size = 5)))
+
+
+    p3 <- plot_ly(
+      data = pca$rotated, x = ~PC1, y = ~PC3, z = ~PC2,
+      color = pca$metadata$microbiome,
+      text = paste(
+        rownames(pca$metadata),
+        pca$metadata$microbiome,
+        pca$metadata$sampletype,
+        pca$metadata$strain,
+        pca$metadata$age
+      )
+    ) %>%
+      layout(
+        scene = list(
+          xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]], 2), "%", sep = "")),
+          yaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]], 2), "%", sep = "")),
+          zaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]], 2), "%", sep = ""))
+        )
+      ) %>%
+      add_markers(
+        symbol = pca$metadata$suborgan,
+        symbols = c("circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x")
+      )
+
+    return(list("microbiome" = p1, "suborgan" = p2, "combined" = combined, "microbiome3d" = p3))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+::: panel-tabset
+### Combined
+```{r, fig.height=8, fig.width=24, dpi = 300}
+p1 <- p_results$side$combined
+p2 <- p_results$sidenonCGI$combined
+p3 <- p_results$sideCGI$combined
+
+p <- p1 + p2 + p3 + plot_layout(guides = "collect")
+
+p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20))
+```
+
+### 3d
+```{r, fig.height=7, fig.width=8, dpi = 300}
+p_results$side$microbiome3d
+```
+:::
+
+## PCA {style="font-size: 16px;"}
+#### Removing side specific sites {style="font-size: 16px;"}
+::: panel-tabset
+### Combined
+```{r, fig.height=8, fig.width=24, dpi = 300, out.width="50%"}
+p1 <- p_results$noSide$combined
+p2 <- p_results$noSidenonCGI$combined
+p3 <- p_results$noSideCGI$combined
+
+p <- p1 + p2 + p3 + plot_layout(guides = "collect")
+
+p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20))
+```
+
+### 3d
+```{r, fig.height=7, fig.width=8, dpi = 300, out.width="50%"}
+p_results$noSide$microbiome3d
+```
+:::
+
+## Differential Methylation using `r prettyNum(nrow(pj_normal), big.mark = ",", scientific = FALSE)` sites {style="font-size: 16px;"}
+#### Comparing microbiome vs gf (separating sidedness) {style="font-size: 16px;"}
+```{r, include=FALSE}
+p_results <- sapply(
+  names(dm_results[6:11]),
+  FUN = function(x){
+    df <- dm_results[[x]];
+    
+    df_plot <- df
+    p <- coriell::plot_volcano(df_plot, x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1) + 
+      labs(title = "All sites", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+  
+    df_plot <- df[!df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value,
+                                   n = nrow(df_plot),
+                                   method = "fdr")
+    p1 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "Non CpG Islands", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+    df_plot <- df[df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value, 
+                                   n = nrow(df_plot), 
+                                   method = "fdr")
+    p2 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "CpG Islands",
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+   combined <- p1 + p + p2
+    
+    return(list("all" = p, "non-islands" = p1, "islands" = p2, "combined" = wrap_elements(combined)))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+::: panel-tabset
+### Volcano plot 
+```{r fig.width=40, fig.height=20, dpi = 300}
+p1 <- p_results[["consortium_gf_pcol"]]$combined
+p2 <- p_results[["consortium_gf_dcol"]]$combined
+p3 <- p_results[["spf_gf_pcol"]]$combined
+p4 <- p_results[["spf_gf_dcol"]]$combined
+p5 <- p_results[["eckp_gf_pcol"]]$combined
+p6 <- p_results[["eckp_gf_dcol"]]$combined
+patch1 <- (p1 / p3 / p5)
+patch2 <- (p2 / p4 / p6)
+
+p <- patch1 | patch2
+p + 
+  patchwork::plot_annotation(tag_levels = list(c("PCOL:CONS-GF","PCOL:SPF-GF", "PCOL:ECKP-GF", "DCOL:CONS-GF","DCOL:SPF-GF", "DCOL:ECKP-GF"))) &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+```
+
+### Hyper vs Hypo 
+```{r, fig.width=40, fig.height=16, include=FALSE}
+df_long <- pivot_longer(contrasts3, cols = ends_with("col"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[6:11])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island")) %>% filter(sig == TRUE)
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+xticks <- abs(seq(-40000,40000,2500))
+xticks[xticks %noin% abs(seq(-40000,40000,5000))] <- ""
+
+p6 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_pcol","spf_gf_pcol","eckp_gf_pcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p5 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_dcol", "spf_gf_dcol", "eckp_gf_dcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p4 <- ggplot(df_count %>% filter(!is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_pcol","spf_gf_pcol","eckp_gf_pcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p3 <- ggplot(df_count %>% filter(!is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_dcol", "spf_gf_dcol", "eckp_gf_dcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p2 <- ggplot(df_count %>% filter(is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_pcol","spf_gf_pcol","eckp_gf_pcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p1 <- ggplot(df_count %>% filter(is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "Consortium-GF (PCOL)", 
+                              spf_gf_pcol = "SPF-GF (PCOL)", 
+                              eckp_gf_pcol = "ECKP-GF (PCOL)",
+                              consortium_gf_dcol = "Consortium-GF (DCOL)",
+                              spf_gf_dcol = "SPF-GF (DCOL)",
+                              eckp_gf_dcol = "ECKP-GF (DCOL)"),
+                   limits = c("consortium_gf_dcol", "spf_gf_dcol", "eckp_gf_dcol")) + 
+  scale_y_continuous(breaks = seq(-40000,40000,2500), limits = c(-40000, 40000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Sites \n Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+patch1 <- p6 + p4 + p2
+patch2 <- p5 + p3 + p1
+
+p <- patch1 / patch2
+
+p + plot_layout(guides = "collect") + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        title = element_text(size = 20),
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20),
+        axis.title.y = element_text(size = 20),
+        axis.text = element_text(size = 16),
+        legend.text = element_text(size = 16))
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome vs germ-free (separating sidedness) {style="font-size: 16px;"}
+::: panel-tabset
+### PCOL: ECKP-GF vs DCOL: ECKP-GF 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast23$plot +
+  xlab("diffMeth A (PCOL: ECKP vs GF)") + ylab("diffMeth B (DCOL: ECKP vs GF)")
+
+p2 <- overlap_results$contrast23$plot_facet
+
+p3 <- overlap_results$contrast23$ab_plot
+
+p4 <- overlap_results$contrast23$plot_facet +
+  xlab("diffMeth A (PCOL: ECKP vs GF)") + 
+  ylab("diffMeth B (DCOL: ECKP vs GF)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### PCOL: SPF-GF vs DCOL: SPF-GF 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast24$plot +
+  xlab("diffMeth A (PCOL: SPF vs GF)") + ylab("diffMeth B (DCOL: SPF vs GF)")
+
+p2 <- overlap_results$contrast24$plot_facet
+
+p3 <- overlap_results$contrast24$ab_plot
+
+p4 <- overlap_results$contrast24$plot_facet +
+  xlab("diffMeth A (PCOL: SPF vs GF)") + 
+  ylab("diffMeth B (DCOL: SPF vs GF)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+
+### PCOL: CONS-GF vs DCOL: CONS-GF 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast25$plot +
+  xlab("diffMeth A (PCOL: CONS vs GF)") + ylab("diffMeth B (DCOL: CONS vs GF)")
+
+p2 <- overlap_results$contrast25$plot_facet
+
+p3 <- overlap_results$contrast25$ab_plot
+
+p4 <- overlap_results$contrast25$plot_facet +
+  xlab("diffMeth A (PCOL: CONS vs GF)") + 
+  ylab("diffMeth B (DCOL: CONS vs GF)") +
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.8,
+                     ymin = 0, ymax = -0.8)
+
+p1 + p4
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome vs germ-free (separating sidedness) {style="font-size: 16px;"}
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+library(UpSetR)
+df <- contrasts
+df[, 6:14] <- sapply(df[, 6:14], as.numeric)
+upset(df[,c(1,6:11)], nsets = 6, mb.ratio = c(0.55, 0.45), order.by = "degree", keep.order = TRUE)
+```
+
+## How many of these sites are in "sidedness"? {style="font-size: 16px;"}
+#### All Sites {style="font-size: 16px;"}
+```{r, include=FALSE}
+library(ggvenn)
+a <- list("PCOL:ECKP-GF" = contrasts %>% filter(eckp_gf_pcol) %>% pull(chr_base),
+          "DCOL:ECKP-GF" = contrasts %>% filter(eckp_gf_dcol) %>% pull(chr_base),
+          "PCOL:SPF-GF" = contrasts %>% filter(spf_gf_pcol) %>% pull(chr_base),
+          "DCOL:SPF-GF" = contrasts %>% filter(spf_gf_dcol) %>% pull(chr_base),
+          "PCOL:CONS-GF" = contrasts %>% filter(consortium_gf_pcol) %>% pull(chr_base),
+          "DCOL:CONS-GF" = contrasts %>% filter(consortium_gf_dcol) %>% pull(chr_base),
+          "GF/CONS/SPF/ECKP:PCOL-DCOL" = contrasts %>% 
+            filter(gf_by_suborgan |
+                     consortium_by_suborgan |
+                     spf_by_suborgan | 
+                     eckp_by_suborgan) %>%
+            pull(chr_base),
+          "GF/CONS/SPF/ECKP:PCOL-DCOL (CGI)" = contrasts %>% 
+            filter((gf_by_suborgan |
+                     consortium_by_suborgan |
+                     spf_by_suborgan | 
+                     eckp_by_suborgan) & is_island) %>%
+            pull(chr_base),
+          "GF/CONS/SPF/ECKP:PCOL-DCOL (nonCGI)" = contrasts %>% 
+            filter((gf_by_suborgan |
+                     consortium_by_suborgan |
+                     spf_by_suborgan | 
+                     eckp_by_suborgan) & !is_island) %>%
+            pull(chr_base), 
+          "PCOL:ECKP-GF (CGI)" = contrasts3 %>% filter(eckp_gf_pcol & is_island) %>% pull(chr_base),
+          "DCOL:ECKP-GF (CGI)" = contrasts3 %>% filter(eckp_gf_dcol & is_island) %>% pull(chr_base),
+          "PCOL:SPF-GF (CGI)" = contrasts3 %>% filter(spf_gf_pcol & is_island) %>% pull(chr_base),
+          "DCOL:SPF-GF (CGI)" = contrasts3 %>% filter(spf_gf_dcol & is_island) %>% pull(chr_base),
+          "PCOL:CONS-GF (CGI)" = contrasts3 %>% filter(consortium_gf_pcol & is_island) %>% pull(chr_base),
+          "DCOL:CONS-GF (CGI)" = contrasts3 %>% filter(consortium_gf_dcol & is_island) %>% pull(chr_base),
+          "PCOL:ECKP-GF (nonCGI)" = contrasts3 %>% filter(eckp_gf_pcol & !is_island) %>% pull(chr_base),
+          "DCOL:ECKP-GF (nonCGI)" = contrasts3 %>% filter(eckp_gf_dcol & !is_island) %>% pull(chr_base),
+          "PCOL:SPF-GF (nonCGI)" = contrasts3 %>% filter(spf_gf_pcol & !is_island) %>% pull(chr_base),
+          "DCOL:SPF-GF (nonCGI)" = contrasts3 %>% filter(spf_gf_dcol & !is_island) %>% pull(chr_base),
+          "PCOL:CONS-GF (nonCGI)" = contrasts3 %>% filter(consortium_gf_pcol & !is_island) %>% pull(chr_base),
+          "DCOL:CONS-GF (nonCGI)" = contrasts3 %>% filter(consortium_gf_dcol & !is_island) %>% pull(chr_base)
+  )
+```
+
+::: panel-tabset
+### (PCOL:ECKP-GF &#x2229; DCOL:ECKP-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:ECKP-GF", "DCOL:ECKP-GF", "GF/CONS/SPF/ECKP:PCOL-DCOL"))
+```
+
+### (PCOL:SPF-GF &#x2229; DCOL:SPF-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:SPF-GF", "DCOL:SPF-GF", "GF/CONS/SPF/ECKP:PCOL-DCOL"))
+```
+
+### (PCOL:CONS-GF &#x2229; DCOL:CONS-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:CONS-GF", "DCOL:CONS-GF", "GF/CONS/SPF/ECKP:PCOL-DCOL"))
+```
+:::
+
+## How many of these sites are in "sidedness"? {style="font-size: 16px;"}
+#### CGI {style="font-size: 16px;"}
+
+::: panel-tabset
+### (PCOL:ECKP-GF &#x2229; DCOL:ECKP-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:ECKP-GF (CGI)", "DCOL:ECKP-GF (CGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (CGI)"))
+```
+
+### (PCOL:SPF-GF &#x2229; DCOL:SPF-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:SPF-GF (CGI)", "DCOL:SPF-GF (CGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (CGI)"))
+```
+
+### (PCOL:CONS-GF &#x2229; DCOL:CONS-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:CONS-GF (CGI)", "DCOL:CONS-GF (CGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (CGI)"))
+```
+:::
+
+## How many of these sites are in "sidedness"? {style="font-size: 16px;"}
+#### nonCGI {style="font-size: 16px;"}
+
+::: panel-tabset
+### (PCOL:ECKP-GF &#x2229; DCOL:ECKP-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:ECKP-GF (nonCGI)", "DCOL:ECKP-GF (nonCGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (nonCGI)"))
+```
+
+### (PCOL:SPF-GF &#x2229; DCOL:SPF-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:SPF-GF (nonCGI)", "DCOL:SPF-GF (nonCGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (nonCGI)"))
+```
+
+### (PCOL:CONS-GF &#x2229; DCOL:CONS-GF) &#x2229; ((GF &#x222A; CONS &#x222A; SPF &#x222A; ECKP): PCOL vs DCOL)
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+ggvenn::ggvenn(a, columns = c("PCOL:CONS-GF (nonCGI)", "DCOL:CONS-GF (nonCGI)", "GF/CONS/SPF/ECKP:PCOL-DCOL (nonCGI)"))
+```
+:::
+
+## GO enrichment analysis {style="font-size: 16px;"} 
+#### Using sites significant in microbiome vs gf (separating sidedness) {style="font-size: 16px;"}
+
+::: panel-tabset
+### PCOL: ECKP-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$eckp_gf_pcol$barplot
+```
+
+### DCOL: ECKP-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$eckp_gf_dcol$barplot
+```
+
+### PCOL: SPF-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$spf_gf_pcol$barplot
+```
+
+### DCOL: SPF-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$spf_gf_dcol$barplot
+```
+
+### PCOL: CONS-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$cons_gf_pcol$barplot
+```
+
+### DCOL: CONS-GF
+```{r,fig.width=20, fig.height=10}
+go_results1$cons_gf_dcol$barplot
+```
+:::
+
+## Differential Methylation using `r prettyNum(nrow(pj_normal), big.mark = ",", scientific = FALSE)` sites {style="font-size: 16px;"}
+#### Comparing microbiome using only CpG islands {style="font-size: 16px;"}
+```{r, include=FALSE}
+p_results <- sapply(
+  names(results3),
+  FUN = function(x){
+    df <- results3[[x]];
+    
+    df_plot <- df
+    p <- coriell::plot_volcano(df_plot, x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1) + 
+      labs(title = "All sites", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+  
+    df_plot <- df[!df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value,
+                                   n = nrow(df_plot),
+                                   method = "fdr")
+    p1 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "Non CpG Islands", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+    df_plot <- df[df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value, 
+                                   n = nrow(df_plot), 
+                                   method = "fdr")
+    p2 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "CpG Islands",
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+    combined <- (p1 + p + p2)
+    
+    return(list("all" = p, "non-islands" = p1, "islands" = p2, "combined" = wrap_elements(combined)))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+::: panel-tabset
+### Volcano plot 
+```{r fig.width=24, fig.height=7, dpi = 300}
+p1 <- p_results[["consortium_gf"]]$islands + ggtitle("CGI") + labs(caption = "") + scale_x_continuous(limits = c(-1, 1))
+p2 <- p_results[["spf_gf"]]$islands + ggtitle("CGI") + labs(caption = "") + scale_x_continuous(limits = c(-1, 1))
+p3 <- p_results[["eckp_gf"]]$islands + ggtitle("CGI") + labs(caption = "") + scale_x_continuous(limits = c(-1, 1))
+
+p <- p1 + p2 + p3
+
+p + 
+  patchwork::plot_annotation(tag_levels = list(c("CONS-GF", "SPF-GF", "ECKP-GF"))) &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 20),
+        axis.title.x = element_text(size = 20, face = "bold"),
+        axis.title.y = element_text(size = 20, face = "bold"),
+        legend.text = element_text(size = 18),
+        axis.text.x = element_text(size = 16),
+        axis.text.y = element_text(size = 16),
+        plot.title = element_text(size = 20, face = "bold"),
+        axis.text = element_text(face = "bold"))
+```
+
+### Hyper vs Hypo 
+```{r, fig.width=6, fig.height=8, include=FALSE}
+df_long <- pivot_longer(contrasts3 %>% filter(is_island), cols = ends_with("f"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[12:14])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island")) %>% filter(sig == TRUE)
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+xticks <- abs(seq(-5000,5000,250))
+xticks[xticks %noin% abs(seq(-5000,5000,500))] <- ""
+
+p3 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf = "Consortium-GF", 
+                              spf_gf = "SPF-GF", 
+                              eckp_gf = "ECKP-GF"
+                              ),
+                   limits = c("consortium_gf","spf_gf","eckp_gf")) + 
+  scale_y_continuous(breaks = seq(-5000,5000,250), limits = c(-5000, 5000), labels = xticks) +
+  xlab("Comparison") +
+  ylab("Number of CpG Islands Differentially Methylated by Microbiome") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+
+p3
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome separating sidedness using only CpG islands {style="font-size: 16px;"}
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+df <- contrasts3
+df <- df[df$is_island,]
+df[, 6:14] <- sapply(df[, 6:14], as.numeric)
+upset(df[,c(1,6:11)], nsets = 6, mb.ratio = c(0.55, 0.45), order.by = "degree", keep.order = TRUE)
+```
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome using only CpG islands {style="font-size: 16px;"}
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+df <- contrasts3
+df <- df[df$is_island,]
+df[, 6:14] <- sapply(df[, 6:14], as.numeric)
+upset(df[,c(1,12:14)], nsets = 6, mb.ratio = c(0.55, 0.45), order.by = "degree", keep.order = TRUE)
+```
+
+## GO enrichment analysis {style="font-size: 16px;"} 
+#### Using sites significant in Microbiome vs GF (CpG islands only) {style="font-size: 16px;"}
+
+::: panel-tabset
+### CONS-GF
+```{r,fig.width=20, fig.height=10}
+go_results2$consortium_gf$barplot
+```
+
+### SPF-GF
+```{r,fig.width=20, fig.height=10}
+go_results2$spf_gf$barplot
+```
+
+### ECKP-GF
+```{r,fig.width=20, fig.height=10}
+go_results2$eckp_gf$barplot
+```
+:::
+
+## Differential Methylation using `r prettyNum(nrow(pj_normal), big.mark = ",", scientific = FALSE)` sites {style="font-size: 16px;"}
+#### Comparing microbiome separating sidedness using only CpG islands {style="font-size: 16px;"}
+::: panel-tabset
+### Volcano plot
+```{r fig.width=20, fig.height=15, dpi = 300}
+p1 <- p_results[["consortium_gf_pcol"]]$islands + ggtitle("Islands")
+p2 <- p_results[["spf_gf_pcol"]]$islands + ggtitle("Islands")
+p3 <- p_results[["eckp_gf_pcol"]]$islands + ggtitle("Islands")
+p4 <- p_results[["consortium_gf_dcol"]]$islands + ggtitle("Islands")
+p5 <- p_results[["spf_gf_dcol"]]$islands + ggtitle("Islands")
+p6 <- p_results[["eckp_gf_dcol"]]$islands + ggtitle("Islands")
+
+patch1 <- (p1 / p2 / p3)
+patch2 <- (p4 / p5 / p6)
+
+p <- patch1 | patch2
+p + 
+  patchwork::plot_annotation(tag_levels = list(c("PCOL:CONS-GF","PCOL:SPF-GF", "PCOL:ECKP-GF", "DCOL:CONS-GF","DCOL:SPF-GF", "DCOL:ECKP-GF"))) &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+```
+
+### Hyper vs Hypo 
+```{r, fig.width=15, fig.height=8, include=FALSE}
+df_long <- pivot_longer(contrasts3 %>% select(-annot.symbol) %>% filter(is_island), cols = ends_with("l"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[6:11])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island")) %>% filter(sig == TRUE)
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+p3 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Methylation Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf_pcol = "PCOL:CONS-GF", 
+                              spf_gf_pcol = "PCOL:SPF-GF", 
+                              eckp_gf_pcol = "PCOL:ECKP-GF",
+                              consortium_gf_dcol = "DCOL:CONS-GF", 
+                              spf_gf_dcol = "DCOL:SPF-GF", 
+                              eckp_gf_dcol = "DCOL:ECKP-GF"
+                              ),
+                   limits = c("consortium_gf_pcol","spf_gf_pcol","eckp_gf_pcol",
+                              "consortium_gf_dcol","spf_gf_dcol","eckp_gf_dcol")) + 
+  scale_y_continuous(breaks = seq(-5000,5000,250), limits = c(-5000, 5000), labels = abs(seq(-5000,5000,250))) +
+  xlab("Contrast") +
+  ylab("Frequency") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+
+p3
+```
+:::
+
+## Age Correlation {style="font-size: 16px;"}
+#### Comparing microbiome separating sidedness using only CpG islands {style="font-size: 16px;"}
+```{r}
+df <- dm_results$eckp_gf
+df <- df[df$is_island,]
+sites <- names(age_cor) %in% rownames(df)
+cor <- age_cor[sites]
+df <- df[names(cor),]
+df$age_cor <- cor
+
+
+plot(df$diff, df$age_cor)
+
+ggplot(data = df, mapping = aes(x = diff, y = age_cor, color = status)) + 
+  geom_point(data = df[df$sig & (df$status == "hyper")])
+```
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome separating sidedness using only CpG islands {style="font-size: 16px;"}
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+df <- contrasts3
+df <- df[df$is_island,]
+df[, 6:14] <- sapply(df[, 6:14], as.numeric)
+upset(df[,c(1,6:11)], nsets = 6, mb.ratio = c(0.55, 0.45), order.by = "degree", keep.order = TRUE)
+```
+
+## Differential Methylation using `r prettyNum(nrow(pj_normal), big.mark = ",", scientific = FALSE)` sites {style="font-size: 16px;"}
+#### Comparing microbiome vs germ-free (sidedness combined) {style="font-size: 16px;"}
+```{r, include=FALSE}
+p_results <- sapply(
+  names(dm_results)[12:14],
+  FUN = function(x){
+    df <- dm_results[[x]];
+    
+    df_plot <- df
+    p <- coriell::plot_volcano(df_plot, x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1) + 
+      labs(title = "All sites", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+  
+    df_plot <- df[!df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value,
+                                   n = nrow(df_plot),
+                                   method = "fdr")
+    p1 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "Non CpG Islands", 
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+    df_plot <- df[df$is_island,]
+    df_plot$adj.P.Val2 <- p.adjust(df_plot$P.Value, 
+                                   n = nrow(df_plot), 
+                                   method = "fdr")
+    p2 <- coriell::plot_volcano(
+      df_plot, 
+      x = "diff", y = "adj.P.Val", fdr = .1, lfc = .1
+    ) + 
+      labs(title = "CpG Islands",
+           caption = sprintf("FDR = .1 \ndiffMeth cutoff = .1 \nN sites: %s", nrow(df_plot))) + 
+      xlab("diffMeth") + 
+      theme(plot.title = element_text(size = 20))
+    
+    return(list("all" = p, "non-islands" = p1, "islands" = p2, "combined" = wrap_elements(p1 | p | p2)))
+  },
+  simplify = FALSE,
+  USE.NAMES = TRUE
+)
+```
+
+::: panel-tabset
+### Volcano plot
+```{r fig.width=20, fig.height=18}
+p1 <- p_results[["consortium_gf"]]$combined
+p2 <- p_results[["spf_gf"]]$combined
+p3 <- p_results[["eckp_gf"]]$combined
+
+p <- p1/p2/p3
+
+p + 
+  patchwork::plot_annotation(tag_levels = list(c("CONS-GF", "SPF-GF", "ECKP-GF"))) &
+  theme(plot.tag = element_text(size = 20, face = "bold"))
+```
+
+### Hyper vs Hypo 
+```{r, fig.width=30, fig.height=8, include=FALSE}
+df_long <- pivot_longer(contrasts3, cols = ends_with("gf"), values_to = "sig", names_to = "contrast")
+
+for(x in names(dm_results[12:14])){
+  idx <- df_long[df_long$contrast == x,]$chr_base
+  df_long[df_long$contrast == x,"status", drop=FALSE] <- dm_results[[x]][idx,]$status
+}
+
+df_count <- count(df_long, vars = c("contrast", "sig", "status", "is_island")) %>% filter(sig == TRUE)
+df_count$contrast <- factor(df_count$contrast, levels = c("consortium_gf","spf_gf","eckp_gf"))
+df_count[df_count$status == "hypo",]$freq <- (df_count[df_count$status == "hypo",]$freq * -1)
+
+p3 <- ggplot(df_count, aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf = "CONS-GF", 
+                              spf_gf = "SPF-GF", 
+                              eckp_gf = "ECKP-GF"
+                              ),
+                   limits = c("consortium_gf","spf_gf","eckp_gf")) + 
+  scale_y_continuous(breaks = seq(0,80000,5000)) +
+  xlab("Contrast") +
+  ylab("Frequency") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p1 <- ggplot(df_count %>% filter(is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf = "CONS-GF", 
+                              spf_gf = "SPF-GF", 
+                              eckp_gf = "ECKP-GF"
+                              ),
+                   limits = c("consortium_gf","spf_gf","eckp_gf")) + 
+  scale_y_continuous(breaks = seq(0,3000,200)) +
+  xlab("Contrast") +
+  ylab("Frequency") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p2 <- ggplot(df_count %>% filter(!is_island), aes(x = contrast, y = freq, fill = status)) + 
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  scale_fill_manual(name = "Status", values = c("red2", "royalblue2"), labels = c("Hyper", "Hypo")) +
+  scale_x_discrete(labels = c(consortium_gf = "CONS-GF", 
+                              spf_gf = "SPF-GF", 
+                              eckp_gf = "ECKP-GF"
+                              ),
+                   limits = c("consortium_gf","spf_gf","eckp_gf")) + 
+  scale_y_continuous(breaks = seq(0,80000,5000)) +
+  xlab("Contrast") +
+  ylab("Frequency") +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(size = 5)),
+         shape = guide_legend(override.aes = list(size = 5)))
+
+p <- p3 + p2 + p1 + plot_layout(guides = "collect")
+
+p + patchwork::plot_annotation(tag_levels = "A") &
+  theme(plot.tag = element_text(size = 32, face = "bold"), legend.position = "bottom",
+        legend.title = element_text(size = 16),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 15))
+```
+:::
+
+## Overlap of Differential Methylation {style="font-size: 16px;"}
+#### Comparing microbiome vs germ-free {style="font-size: 16px;"}
+::: panel-tabset
+### ECKP-GF vs SPF-GF 
+```{r, fig.height=10, fig.width=20, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast20$plot +
+  xlab("diffMeth A (ECKP vs GF)") + ylab("diffMeth B (SPF vs GF)")
+
+p2 <- overlap_results$contrast20$plot_facet
+
+p3 <- overlap_results$contrast20$ab_plot
+
+p4 <- overlap_results$contrast20$plot_facet +
+  xlab("diffMeth A (ECKP vs GF)") + 
+  ylab("diffMeth B (SPF vs GF)") + 
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.9,
+                     ymin = 0, ymax = -0.8)
+
+
+p1 + p4
+```
+
+### ECKP-GF vs CONS-GF 
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast21$plot +
+    xlab("diffMeth A (ECKP vs GF)") + ylab("diffMeth B (Consortium vs GF)")
+
+p2 <- overlap_results$contrast20$plot_facet
+
+p3 <- overlap_results$contrast20$ab_plot
+
+p4 <- overlap_results$contrast20$plot_facet +
+  xlab("diffMeth A (ECKP vs GF)") + 
+  ylab("diffMeth B (Consortium vs GF)") + 
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.9,
+                     ymin = 0, ymax = -0.8)
+
+
+p1 + p4
+```
+
+### SPF-GF vs CONS-GF 
+```{r, fig.height=7, fig.width=15, dpi=300, out.width="75%"}
+p1 <- overlap_results$contrast22$plot + 
+    xlab("diffMeth A (SPF vs GF)") + ylab("diffMeth B (Consortium vs GF)")
+
+p2 <- overlap_results$contrast22$plot_facet
+
+p3 <- overlap_results$contrast22$ab_plot
+
+p4 <- overlap_results$contrast22$plot_facet +
+  xlab("diffMeth A (SPF vs GF)") + 
+  ylab("diffMeth B (Consortium vs GF)") + 
+  annotation_custom2(grob=ggplotGrob(p3),
+                     data = p2$data %>% filter(facet_var == "AB"),
+                     xmin = 0, xmax = 0.9,
+                     ymin = 0, ymax = -0.8)
+
+
+p1 + p4
+```
+:::
+
+## RNAseq Prox vs Dist {style="font-size: 16px;"}
+```{r, include=FALSE}
+rnaseq <- subset(rnaseq, isCoding)
+
+dge <- edgeR::SE2DGEList(rnaseq)
+
+design <- model.matrix(~ 0 + suborgan, data = dge$samples)
+colnames(design) <- gsub(pattern = "suborgan", "", colnames(design))
+
+contrasts <- makeContrasts(
+  by_suborgan = PCOL - DCOL,
+  levels=design
+)
+
+keep <- edgeR::filterByExpr(dge, design = design)
+
+dge <- dge[keep, ,keep.lib.sizes = FALSE]
+
+dge <- calcNormFactors(dge)
+
+cpms <- cpm(dge)
+
+logcpms <- cpm(dge, log = TRUE)
+
+dge <- estimateDisp(dge, design = design, robust = TRUE)
+
+fit <- glmQLFit(dge, design, robust = TRUE)
+
+qlf <- glmQLFTest(fit, contrast = contrasts[,"by_suborgan"])
+
+qlftable <- topTags(qlf, n = Inf)
+qlftable$table$sig.PvD <- (abs(qlftable$table$logFC.PvD) > 1 & qlftable$table$FDR.PvD < .1)
+
+rowData(rnaseq)[rownames(qlftable$table),"logFC.PvD"] <- 0
+rowData(rnaseq)[rownames(qlftable$table),"logFC.PvD"] <- qlftable$table$logFC
+
+rowData(rnaseq)[rownames(qlftable$table),"FDR.PvD"] <- 0
+rowData(rnaseq)[rownames(qlftable$table),"FDR.PvD"] <- qlftable$table$FDR
+
+rowData(rnaseq_ranged)[rownames(qlftable$table),"logFC.PvD"] <- 0
+rowData(rnaseq_ranged)[rownames(qlftable$table),"logFC.PvD"] <- qlftable$table$logFC
+
+rowData(rnaseq_ranged)[rownames(qlftable$table),"FDR.PvD"] <- 0
+rowData(rnaseq_ranged)[rownames(qlftable$table),"FDR.PvD"] <- qlftable$table$FDR
+
+rowData(rnaseq_ranged)[,"sig.PvD"] <- FALSE
+rowData(rnaseq_ranged)[,"sig.PvD"] <- (abs(rowData(rnaseq_ranged)$logFC.PvD) > 1 & rowData(rnaseq_ranged)$FDR.PvD < .1)
+```
+
+### PCA
+```{r fig.width=8, fig.height=7, dpi=300,}
+var <- order(matrixStats::rowVars(logcpms, na.rm = TRUE), decreasing = TRUE)
+#subset <- logcpms[head(var, nrow(logcpms)/2),]
+subset <- logcpms
+
+pca <- PCAtools::pca(subset, metadata = coldata[,"suborgan",drop = FALSE], scale = TRUE)
+
+pcabiplot <- ggplot(data = pca$rotated, aes(PC1, PC2, color = pca$metadata$suborgan)) +
+  geom_point(size = 10, alpha = .9) +
+  scale_color_manual(
+    name = "Tissue Type",
+    values = c("forestgreen", "khaki"),
+    labels = c("Distal", "Proximal")
+  ) +
+  labs(
+    y = sprintf("PC2 (%s%%)", round(pca$variance[["PC2"]], 1)),
+    x = sprintf("PC1 (%s%%)", round(pca$variance[["PC1"]], 1))
+  ) +
+  theme_classic() +
+  theme(
+    text = element_text(face = "bold", family = "Arial"),
+    legend.title = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.text = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    legend.position = "bottom"
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+pcabiplot
+```
+
+### Heatmap
+```{r, fig.width=10, fig.height=12}
+#setup legend and annotation parameters
+md <- dge$samples
+md$suborgan <- factor(md$suborgan, levels = c("DCOL", "PCOL"))
+
+
+colfunc <- colorRampPalette(c("royalblue", "royalblue2", "white", "red", "red2"))
+color_palette <- colorRamp2(seq(-20, 20, length.out = 7),
+                            colors = colfunc(7))
+
+color_mapping <- list(
+  suborgan = c(
+    "PCOL" = "khaki",
+    "DCOL" = "forestgreen"
+  )
+)
+
+legend_param <- list(
+  suborgan = list(labels = c("Distal", "Proximal"), 
+                  title_gp = gpar(fontsize = 15, fontface = "bold"), 
+                  labels_gp = gpar(fontsize = 12))
+)
+
+col_ha <- HeatmapAnnotation(
+  df = md[,"suborgan",drop = FALSE],
+  col = color_mapping,
+  annotation_legend_param = legend_param,
+  border = TRUE,
+  annotation_label = c("Tissue Type"),
+  show_annotation_name = c(suborgan = FALSE),
+  show_legend = c(FALSE)
+)
+
+ht1 <- ComplexHeatmap::Heatmap(
+  logcpms,
+  name = "logCPM",
+  top_annotation = col_ha,
+  show_row_names = FALSE,
+  show_column_names = TRUE,
+  show_heatmap_legend = FALSE,
+  show_row_dend = FALSE,
+  row_dend_side = "right",
+  column_dend_reorder = TRUE,
+  heatmap_legend_param = list(
+    legend_direction = "vertical",
+    legend_width = unit(5, "cm")
+  ),
+  col = color_palette
+)
+
+p1 <- draw(
+  ht1, heatmap_legend_side = "right", 
+  annotation_legend_side = "right"
+) %>% 
+  grid.grabExpr()
+
+#Draw legend separate
+lgd1 <- Legend(col_fun = color_palette, 
+               title = "logCPM",
+               at = c(-20,-10,0,10,20),
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               legend_height = unit(5, "cm"),
+               grid_width = unit(7, "mm"))
+
+lgd2 <- Legend(labels = c("Distal", "Proximal"), 
+               legend_gp = gpar(fill=c("khaki", "forestgreen")), 
+               title = "Tissue Type",
+               title_gp = gpar(fontsize = 20, fontface = "bold"), 
+               labels_gp = gpar(fontsize = 18),
+               grid_height = unit(.8, "cm"), 
+               grid_width = unit(7, "mm"))
+
+pd = packLegend(list = list(lgd1, lgd2)) %>% draw() %>% grid.grabExpr()
+
+p <- wrap_plots(list(p1, pd), ncol = 2, widths = c(.8,.2))
+
+p
+```
+
+### Volcano
+```{r, fig.width=16, fig.height=6}
+p <- coriell::plot_volcano(
+  qlftable$table, 
+  x = "logFC", y = "FDR", fdr = .1, lfc = 1
+) + 
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 20),
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 18),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(face = "bold", color = "black"))
+
+p
+
+p2 <- coriell::plot_md(
+  qlftable$table, 
+  x = "logCPM", y = "logFC",
+  lfc = 1
+  ) + 
+  ylab("logFC") +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 20),
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_text(size = 20, face = "bold"),
+    legend.text = element_text(size = 18),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text = element_text(face = "bold", color = "black"))
+
+p + p2
+```
+### GSEA
+```{r, fig.height=10, fig.width=20}
+universe <- gsub("\\.[0-9]*", "", x = qlftable$table$gene_id)
+
+gene_ids <- gsub("\\.[0-9]", "", x = qlftable$table[qlftable$table$sig.PvD,"gene_id"])
+
+geneList <- qlftable$table[qlftable$table$sig.PvD,"logFC.PvD"]
+names(geneList) <- gene_ids
+geneList <- geneList[order(geneList, decreasing = TRUE)]
+
+go_result <- clusterProfiler::enrichGO(
+  gene = gene_ids,
+  universe = universe,
+  OrgDb = "org.Mm.eg.db",
+  ont = "BP",
+  keyType = "ENSEMBL"
+)
+
+gse_results <- clusterProfiler::gseGO(
+  geneList = geneList,
+  OrgDb = "org.Mm.eg.db",
+  keyType = "ENSEMBL",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  pAdjustMethod = "fdr",
+  verbose = FALSE
+)
+
+dotplot(gse_results) + goplot(gse_results)
+```
+
+### Expression Meth Corr
+```{r, fig.height=8, fig.width=8}
+#get only genes that were output from DE testing
+subset_rnaseq <- rnaseq_ranged[rownames(qlftable$table),]
+
+#Map granges of rnaseq to granges of methylation
+subset_meth <- subsetByOverlaps(pj_normal, granges(subset_rnaseq))
+
+stack <- stack(granges(subset_rnaseq), "gene")
+stack <- plyranges::select(stack, c("gene", "gene_name", "tx_name", "logFC.PvD", "sig.PvD"))
+
+annotated_meth <- annotatr::annotate_regions(granges(subset_meth), stack)
+annotated_meth <- data.frame(annotated_meth) %>% select("seqnames", "start", 
+                                                        "end", "chr_base", 
+                                                        "annot.gene", "annot.tx_name",
+                                                        "annot.logFC.PvD", "annot.sig.PvD")
+
+by_suborgan <- dm_results$spf_by_suborgan[rownames(subset_meth),]
+
+annotated <- left_join(by_suborgan, annotated_meth, by = "chr_base") %>%
+  select(
+    "chr_base", "annot.gene",
+    "annot.tx_name", "group1",
+    "group2", "diff", "logFC",
+    "annot.logFC.PvD", "annot.sig.PvD", "sig") %>% 
+  distinct(chr_base, annot.gene, .keep_all = TRUE) %>%
+  dplyr::group_by(annot.gene) %>%
+  dplyr::mutate(mean_diff = mean(diff)) %>%
+  filter(!is.na(annot.logFC.PvD))
+
+pearson <- cor(annotated$annot.logFC.PvD, annotated$mean_diff, method = "pearson")
+
+ggplot(data = annotated, aes(y = annot.logFC.PvD, x = mean_diff)) +
+  geom_point(data = annotated %>% filter(!annot.sig.PvD), color = "gray", alpha = .2) + 
+  geom_point(data = annotated %>% filter(annot.sig.PvD), color = "red", alpha = .2) +
+  theme_classic() +
+       theme(
+         text = element_text(face = "bold", family = "Arial"),
+         axis.title.x = element_text(size = 14, face = "bold"),
+         axis.title.y = element_text(size = 14, face = "bold"),
+         legend.title = element_text(size = 6),
+         legend.text = element_text(size = 6),
+         axis.text = element_text(size = 10, face = "bold"),
+         legend.position = "right"
+       ) +
+  scale_x_continuous(limits = c(-1,1)) +
+  ylab("logFC Proximal vs Distal Colon") +
+  xlab("Avg diffMeth Proximal vs Distal Colon") + 
+  ggtitle("Differential Methylation vs Differential Expression",
+          subtitle = sprintf("Pearson Coefficient: %s", round(pearson, 4)))
+```
+

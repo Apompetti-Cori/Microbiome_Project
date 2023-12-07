@@ -1,0 +1,816 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-08-07"
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, include=FALSE}
+source(here::here("scripts", "01_data_preprocessing.R"))
+library(circlize)
+library(ComplexHeatmap)
+```
+
+## PCA of Colon samples colored by Percent Lambda CpG Methylation {style="font-size: 16px;"}
+
+###### Sites not age selected; PCA not scaled
+
+```{r conv_stats, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "COL"]
+se <- filter_rrbs(se, workers = 40, nblocks = 20)
+# se <- renameSeqlevels(se, c(MT="M"))
+# se <- renameSeqlevels(se, paste("chr",seqlevels(se),sep=""))
+# se <- chrSelectBSseq(se, seqnames = c("chrJ02459.1_lambda"))
+
+conv_stats <- read_tsv(here::here("data/metadata/compiled_bs_conversion.tsv"))
+conv_stats <- conv_stats %>% rename("sample_id" = "Sample_Name") %>% select(-`library(tidyverse)`)
+md <- colData(se) %>% as.data.frame()
+
+x <- data.frame(search = character(), hit = character())
+for(pattern in md$sample_id){
+  hit <- grep(pattern, conv_stats$sample_id, value = T)
+  x <- x %>% add_row(search = pattern, hit = hit)
+}
+
+x <- x %>% 
+  group_by(search) %>% 
+  summarise(sample_id = first(hit))
+
+conv_stats <- merge(x, conv_stats, by = "sample_id") %>% select(-sample_id) %>% rename(sample_id = search)
+
+md <- merge(md, conv_stats, by = "sample_id")
+rownames(md) <- md$sample_id
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+md <- md[colnames(meth),]
+se <- se[!matrixStats::rowAnyNAs(meth),]
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = md)
+```
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+
+```{r pcaplot1}
+create_y_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('y' = list(df[, var_name])), list('yaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+create_x_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('x' = list(df[, var_name])), list('xaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+axis_var_names <- c('PC1', 'PC2', 'PC3', 'PC4', 'PC5')
+
+p <- plot_ly(pca$rotated, x = ~PC1, y = ~PC2, 
+             height = 600, 
+             mode = "markers", 
+             name = "A", 
+             visible = T, 
+             marker = list(color = pca$metadata$Lambda_Percent_Methylated_CpG,
+                           colorscale = 'Jet',
+                           colorbar = list(title = '%')),
+             text = paste(rownames(pca$metadata),                        
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+    layout(
+    xaxis = list(title = sprintf('%s %s%%', "PC1", round(pca$variance["PC1"], 2))),
+    yaxis = list(title = sprintf('%s %s%%', "PC2", round(pca$variance["PC2"], 2))),
+    updatemenus = list(
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.7,
+        x = -0.1,
+        buttons = create_y_buttons(pca$rotated, axis_var_names)
+      ),
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.5,
+        x = -0.1,
+        buttons = create_x_buttons(pca$rotated, axis_var_names)
+      )
+    ),
+      annotations = list(
+      list(
+        text = "Y axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.75,
+        x = -0.2,
+        showarrow = FALSE
+      ),
+      list(
+        text = "X axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.55,
+        x = -0.2,
+        showarrow = FALSE
+      )
+    )
+  )
+
+p
+```
+
+### 3D PCA {style="font-size: 8px;"}
+
+```{r 3dpca1}
+p <- plot_ly(data = pca$rotated,
+             name = "A",
+             visible = T,
+             x = ~PC1, y = ~PC2, z = ~PC3,
+             height = 600
+             )
+  
+p
+```
+
+### PCA Corplot {style="font-size: 8px;"}
+
+```{r pcacorplot1}
+ggplotly(pcacorplot(pca, components = 1:10, metavars = c("Percent_Methylated_nonCpG","Percent_Methylated_CpG", "Lambda_Percent_Methylated_CpG", "batch", "age", "microbiome", "strain")))
+```
+:::
+
+## PCA of Spleen samples colored by Percent Lambda CpG Methylation {style="font-size: 16px;"}
+
+###### Sites not age selected; PCA not scaled
+
+```{r conv_stats_2, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL"]
+se <- filter_rrbs(se, workers = 40, nblocks = 20)
+
+conv_stats <- read_tsv(here::here("data/metadata/compiled_bs_conversion.tsv"))
+conv_stats <- conv_stats %>% rename("sample_id" = "Sample_Name") %>% select(-`library(tidyverse)`)
+md <- colData(se) %>% as.data.frame()
+
+x <- data.frame(search = character(), hit = character())
+for(pattern in md$sample_id){
+  hit <- grep(pattern, conv_stats$sample_id, value = T)
+  x <- x %>% add_row(search = pattern, hit = hit)
+}
+
+x <- x %>% 
+  group_by(search) %>% 
+  summarise(sample_id = first(hit))
+
+conv_stats <- merge(x, conv_stats, by = "sample_id") %>% select(-sample_id) %>% rename(sample_id = search)
+
+md <- merge(md, conv_stats, by = "sample_id")
+rownames(md) <- md$sample_id
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+md <- md[colnames(meth),]
+se <- se[!matrixStats::rowAnyNAs(meth),]
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = md)
+```
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+
+```{r pcaplot2}
+create_y_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('y' = list(df[, var_name])), list('yaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+create_x_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('x' = list(df[, var_name])), list('xaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+axis_var_names <- c('PC1', 'PC2', 'PC3', 'PC4', 'PC5')
+
+p <- plot_ly(pca$rotated, x = ~PC1, y = ~PC2, 
+             height = 600, 
+             mode = "markers", 
+             name = "A", 
+             visible = T, 
+             marker = list(color = pca$metadata$Lambda_Percent_Methylated_CpG,
+                           colorscale = 'Jet',
+                           colorbar = list(title = '%')),
+             text = paste(rownames(pca$metadata),                        
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+    layout(
+    xaxis = list(title = sprintf('%s %s%%', "PC1", round(pca$variance["PC1"], 2))),
+    yaxis = list(title = sprintf('%s %s%%', "PC2", round(pca$variance["PC2"], 2))),
+    updatemenus = list(
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.7,
+        x = -0.1,
+        buttons = create_y_buttons(pca$rotated, axis_var_names)
+      ),
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.5,
+        x = -0.1,
+        buttons = create_x_buttons(pca$rotated, axis_var_names)
+      )
+    ),
+      annotations = list(
+      list(
+        text = "Y axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.75,
+        x = -0.2,
+        showarrow = FALSE
+      ),
+      list(
+        text = "X axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.55,
+        x = -0.2,
+        showarrow = FALSE
+      )
+    )
+  )
+
+p
+```
+
+### 3D PCA {style="font-size: 8px;"}
+
+```{r 3dpca2}
+p <- plot_ly(data = pca$rotated,
+             name = "A",
+             visible = T,
+             x = ~PC1, y = ~PC2, z = ~PC3,
+             height = 600
+             )
+  
+p
+```
+
+### PCA Corplot {style="font-size: 8px;"}
+
+```{r pcacorplot2}
+ggplotly(pcacorplot(pca, components = 1:10, metavars = c("Percent_Methylated_nonCpG","Percent_Methylated_CpG", "Lambda_Percent_Methylated_CpG", "batch", "age", "microbiome", "strain")))
+```
+:::
+
+## PCA of Spleen samples colored by Percent Lambda CpG Methylation {style="font-size: 16px;"}
+
+###### Sites selected for age; PCA scaled
+
+```{r conv_stats_3, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL"]
+granges <- readRDS(here::here("results/rds/18/granges_spl_strain.rds"))
+se <- IRanges::subsetByOverlaps(se, granges)
+granges <- readRDS(here::here("results/rds/20/granges_spl_4.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+
+conv_stats <- read_tsv(here::here("data/metadata/compiled_bs_conversion.tsv"))
+conv_stats <- conv_stats %>% rename("sample_id" = "Sample_Name") %>% select(-`library(tidyverse)`)
+md <- colData(se) %>% as.data.frame()
+
+x <- data.frame(search = character(), hit = character())
+for(pattern in md$sample_id){
+  hit <- grep(pattern, conv_stats$sample_id, value = T)
+  x <- x %>% add_row(search = pattern, hit = hit)
+}
+
+x <- x %>% 
+  group_by(search) %>% 
+  summarise(sample_id = first(hit))
+
+conv_stats <- merge(x, conv_stats, by = "sample_id") %>% select(-sample_id) %>% rename(sample_id = search)
+
+md <- merge(md, conv_stats, by = "sample_id")
+rownames(md) <- md$sample_id
+
+meth <- getMeth(se, type = "raw") %>% realize_Parallel(workers = 8, nblocks = 4)
+md <- md[colnames(meth),]
+se <- se[!matrixStats::rowAnyNAs(meth),]
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+cov <- getCoverage(se, type = "Cov") %>% realize_Parallel(workers = 8, nblocks = 4)
+
+pca <- PCAtools::pca(meth, metadata = md, scale = TRUE)
+```
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+
+```{r pcaplot3}
+create_y_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('y' = list(df[, var_name])), list('yaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+create_x_buttons <- function(df, axis_var_names) {
+  lapply(
+    axis_var_names,
+    FUN = function(var_name, df) {
+      button <- list(
+        method = 'update',
+        args = list(list('x' = list(df[, var_name])), list('xaxis.title' = sprintf('%s %s%%', var_name, round(pca$variance[var_name], 2)))),
+        label = sprintf('Show %s', var_name)
+      )
+    },
+    df
+  )
+}
+
+axis_var_names <- c('PC1', 'PC2', 'PC3', 'PC4', 'PC5')
+
+p <- plot_ly(pca$rotated, x = ~PC1, y = ~PC2, 
+             height = 600, 
+             mode = "markers", 
+             name = "A", 
+             visible = T, 
+             marker = list(color = pca$metadata$Lambda_Percent_Methylated_All,
+                           colorscale = 'Jet',
+                           colorbar = list(title = '%')),
+             text = paste(rownames(pca$metadata),
+                          pca$metadata$batch,
+                          pca$metadata$microbiome,
+                          pca$metadata$strain,
+                          pca$metadata$age)) %>%
+    layout(
+    xaxis = list(title = sprintf('%s %s%%', "PC1", round(pca$variance["PC1"], 2))),
+    yaxis = list(title = sprintf('%s %s%%', "PC2", round(pca$variance["PC2"], 2))),
+    updatemenus = list(
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.7,
+        x = -0.1,
+        buttons = create_y_buttons(pca$rotated, axis_var_names)
+      ),
+      list(
+        xref = "paper",
+        yref = "paper",
+        y = 0.5,
+        x = -0.1,
+        buttons = create_x_buttons(pca$rotated, axis_var_names)
+      )
+    ),
+    annotations = list(
+      list(
+        text = "Y axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.75,
+        x = -0.2,
+        showarrow = FALSE
+      ),
+      list(
+        text = "X axis:",
+        xref = "paper",
+        yref = "paper",
+        y = 0.55,
+        x = -0.2,
+        showarrow = FALSE
+      )
+    )
+  )
+
+p
+```
+
+### 3D PCA {style="font-size: 8px;"}
+
+```{r 3dpca3}
+p <- plot_ly(data = pca$rotated,
+             name = "A",
+             visible = T,
+             x = ~PC1, y = ~PC2, z = ~PC3,
+             height = 600
+             )
+  
+p
+```
+
+### PCA w/ Loadings {style="font-size: 8px;"}
+
+```{r pcaloadings3}
+PCAtools::biplot(pca, x = "PC1", y = "PC2", showLoadings = T)
+```
+
+### PCA Corplot {style="font-size: 8px;"}
+
+```{r pcacorplot3}
+ggplotly(pcacorplot(pca, components = 1:10, metavars = c("Percent_Methylated_nonCpG", "Percent_Methylated_CpG", "Lambda_Percent_Methylated_CpG", "batch", "age", "microbiome", "strain")))
+```
+
+### Heatmap {style="font-size: 8px;"}
+
+```{r heatmap3}
+cpg_islands <- DMRichR::getCpGs(genome = "mm10")
+hits <- IRanges::findOverlaps(rowRanges(se), filter(cpg_islands, type == "islands"))
+mcols(rowRanges(se))$type <- ""
+mcols(rowRanges(se)[queryHits(hits)])$type <- "islands"
+mcols(rowRanges(se))[mcols(rowRanges(se))$type != "islands",] <- "non-islands"
+
+color_mapping <- colorRamp2(c(min(colData(se)$age), 
+                              max(colData(se)$age)), 
+                            c("snow", "red"))
+color_mapping = list(strain = c("129svev" = "orange4",
+                                    "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                                    "c57bl6" = "lavender"),
+                         microbiome = c("gf" = "black",
+                                        "wt" = "yellow"),
+                         type = c("islands" = "blue",
+                                      "non-islands" = "red"),
+                         age = color_mapping)
+
+
+annotation <- HeatmapAnnotation(df = colData(se)[,c("age", 
+                                                    "microbiome", 
+                                                    "strain")],
+                                col = color_mapping)
+
+heatmap <- ComplexHeatmap::Heatmap(meth, 
+                                   row_split = mcols(rowRanges(se)),
+                                   top_annotation = annotation,
+                                   col = colorRampPalette(c("navy", 
+                                                            "snow", 
+                                                            "gold"))(10))
+
+heatmap
+```
+:::
+
+## Methylation of Age Selected Sites {style="font-size: 16px;"}
+
+::: panel-tabset
+### All 408 age-related sites {style="font-size: 8px;"}
+
+```{r volcano3}
+se2 <- SummarizedExperiment(assays = list(meth = meth, cov = cov), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se))
+
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+
+### Top 10% sites that are pulling outlier on PC2 {style="font-size: 8px;"}
+
+```{r}
+o <- abs(pca$loadings$PC2) %>% order(decreasing = T)
+#take the top 10 percent highest loadings
+top10 <- o[1:(length(o)/10)]
+se2 <- SummarizedExperiment(assays = list(meth = meth[top10,], cov = cov[top10,]), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se[top10,]))
+
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+
+### Removed sites that are pulling outlier on PC2 {style="font-size: 8px;"}
+
+```{r}
+se2 <- SummarizedExperiment(assays = list(meth = meth[-top10,], cov = cov[-top10,]), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se[-top10,]))
+
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+:::
+
+## PCA with these sites removed from methylation matrix {style="font-size: 16px;"}
+
+###### PCA scaled
+
+```{r, include=FALSE}
+se2 <- SummarizedExperiment(assays = list(meth = meth[-top10,]), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se[-top10,]))
+
+meth2 <- assay(se2)
+
+pca2 <- PCAtools::pca(meth2, metadata = colData(se2), scale = TRUE)
+```
+
+::: panel-tabset
+### PCA with the problematic sites removed {style="font-size: 8px;"}
+```{r}
+PCAtools::biplot(pca2, showLoadings = TRUE, colby = "age", title = paste("CpGs:", nrow(pca2$loadings)))
+```
+
+### Top 10% sites that are pulling outlier on PC2 {style="font-size: 8px;"}
+
+```{r}
+o <- abs(pca2$loadings$PC2) %>% order(decreasing = T)
+top10 <- o[1:(length(o)/10)]
+
+se3 <- SummarizedExperiment(assays = list(meth = meth2[top10,]), 
+                            colData = colData(se2), 
+                            rowRanges = rowRanges(se2[top10,]))
+
+meltedse <- mia::meltAssay(se3, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+
+### Removed sites that are pulling outlier on PC2 {style="font-size: 8px;"}
+
+```{r}
+se3 <- SummarizedExperiment(assays = list(meth = meth2[-top10,]), 
+                            colData = colData(se2), 
+                            rowRanges = rowRanges(se2[-top10,]))
+
+meltedse <- mia::meltAssay(se3, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+:::
+
+## PCA with these sites removed from methylation matrix {style="font-size: 16px;"}
+
+###### PCA scaled
+
+```{r, include=FALSE}
+se3 <- SummarizedExperiment(assays = list(meth = meth2[-top10,]), 
+                            colData = colData(se2), 
+                            rowRanges = rowRanges(se2[-top10,]))
+
+meth3 <- assay(se3)
+
+pca3 <- PCAtools::pca(meth3, metadata = colData(se3), scale = TRUE)
+```
+
+```{r}
+PCAtools::biplot(pca3, showLoadings = TRUE, colby = "age", title = paste("CpGs:", nrow(pca3$loadings)))
+```
+
+## Using Smoothed Methylation Values {style="font-size: 16px;"}
+
+###### Using same age-selected sites; PCA scaled
+
+```{r, include=FALSE, cache=TRUE}
+#Load SE
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "smooth")
+se <- se[,se$organ == "SPL"]
+granges <- readRDS(here::here("results/rds/18/granges_spl_strain.rds"))
+se <- IRanges::subsetByOverlaps(se, granges)
+granges <- readRDS(here::here("results/rds/20/granges_spl_4.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+
+conv_stats <- read_tsv(here::here("data/metadata/compiled_bs_conversion.tsv"))
+conv_stats <- conv_stats %>% rename("sample_id" = "Sample_Name") %>% select(-`library(tidyverse)`)
+md <- colData(se) %>% as.data.frame()
+
+x <- data.frame(search = character(), hit = character())
+for(pattern in md$sample_id){
+  hit <- grep(pattern, conv_stats$sample_id, value = T)
+  x <- x %>% add_row(search = pattern, hit = hit)
+}
+
+x <- x %>% 
+  group_by(search) %>% 
+  summarise(sample_id = first(hit))
+
+conv_stats <- merge(x, conv_stats, by = "sample_id") %>% select(-sample_id) %>% rename(sample_id = search)
+
+md <- merge(md, conv_stats, by = "sample_id")
+rownames(md) <- md$sample_id
+
+meth <- getMeth(se, type = "smooth") %>% realize_Parallel(workers = 8, nblocks = 4)
+md <- md[colnames(meth),]
+se <- se[!matrixStats::rowAnyNAs(meth),]
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = md, scale = TRUE)
+```
+
+
+
+::: panel-tabset
+### PCA {style="font-size: 8px;"}
+```{r}
+PCAtools::biplot(pca, colby = "age")
+```
+
+### Heatmap {style="font-size: 8px;"}
+
+```{r}
+cpg_islands <- DMRichR::getCpGs(genome = "mm10")
+hits <- IRanges::findOverlaps(rowRanges(se), filter(cpg_islands, type == "islands"))
+mcols(rowRanges(se))$type <- ""
+mcols(rowRanges(se)[queryHits(hits)])$type <- "islands"
+mcols(rowRanges(se))[mcols(rowRanges(se))$type != "islands",] <- "non-islands"
+
+color_mapping <- colorRamp2(c(min(colData(se)$age), 
+                              max(colData(se)$age)), 
+                            c("snow", "red"))
+color_mapping = list(strain = c("129svev" = "orange4",
+                                    "Lgr5?EGFP?IRES?CreERT2" = "steelblue",
+                                    "c57bl6" = "lavender"),
+                         microbiome = c("gf" = "black",
+                                        "wt" = "yellow"),
+                         type = c("islands" = "blue",
+                                      "non-islands" = "red"),
+                         age = color_mapping)
+
+
+annotation <- HeatmapAnnotation(df = colData(se)[,c("age", 
+                                                    "microbiome", 
+                                                    "strain")],
+                                col = color_mapping)
+
+heatmap <- ComplexHeatmap::Heatmap(meth, 
+                                   row_split = mcols(rowRanges(se)),
+                                   top_annotation = annotation,
+                                   col = colorRampPalette(c("navy", 
+                                                            "snow", 
+                                                            "gold"))(10))
+
+heatmap
+```
+
+### All 408 age-related sites {style="font-size: 8px;"}
+
+```{r}
+se2 <- SummarizedExperiment(assays = list(meth = meth), 
+                            colData = colData(se), 
+                            rowRanges = rowRanges(se))
+
+meltedse <- mia::meltAssay(se2, 
+                           assay_name = "meth", 
+                           abund_values = "meth", 
+                           add_col_data = TRUE,
+                           add_row_data = TRUE)
+
+p <- ggplot(data = meltedse, mapping = aes(x = reorder(sample_id, age),
+                                      y = meth,
+                                      color = age,
+                                      group = FeatureID)) + 
+  geom_line(alpha = .25) + 
+  coriell::theme_coriell() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=12))
+
+p + 
+  facet_grid(rows = vars(type)) +
+  scale_x_discrete(labels=c("sp_4947"=expression(bold("sp_4947")), 
+                            "sp_4928"=expression(bold("sp_4928")),
+                            parse=TRUE))
+```
+:::
+

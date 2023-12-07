@@ -1,0 +1,31 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: ""
+date-format: long
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r render, include=FALSE, eval=FALSE}
+job::empty({
+  quarto::quarto_render(input = here::here("reports/putpresentationfolder/Presentation.qmd"))
+},
+title = "Render Presentation")
+```
+
+```{r loadcache, include=FALSE, eval=FALSE}
+qwraps2::lazyload_cache_dir(here::here("reports/putpresentationfolder/Presentation_cache/revealjs/"))
+```
+
+## Setup {visibility="hidden"}
+```{r setup, include=FALSE}
+
+```
+
+

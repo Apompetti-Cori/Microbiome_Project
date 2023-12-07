@@ -1,0 +1,94 @@
+---
+title: "Tumor Count Significance"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-09-06"
+date-format: long
+title-block-banner: true
+title-block-style: plain
+format:
+  html:
+    smooth-scroll: true
+    fontcolor: black
+    theme: simple
+    toc: true
+    toc-expand: false
+    toc-location: left
+    code-fold: true
+    embed-resources: true
+css: ./styles.css
+---
+
+```{r setup, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+library(here)
+library(ggplot2)
+library(ggmosaic)
+library(gt)
+init_here <- function() {
+  `%noin%` = Negate(`%in%`)
+  files <- dir( all.files = T )
+  while ( ".here" %noin% files & getwd()!="/" ) {
+    setwd("..")
+    files <- dir( all.files = T )
+  }
+  i_am(".here")
+}
+
+init_here()
+
+tumor_count <- readr::read_tsv(
+  here::here("tumor_count.tsv")
+)
+```
+
+## Data Structure
+```{r, echo=TRUE}
+tumor_count |> gt()
+```
+
+
+## Fisher's exact test
+```{r, echo=TRUE}
+tumor_table <- table(
+  tumor_count$microbiome, tumor_count$tumor
+)
+
+tumor_table
+```
+
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+test <- fisher.test(
+  tumor_table, alternative = "two.sided"
+)
+
+ggplot(data = tumor_count) +
+  geom_mosaic(aes(x = product(microbiome), fill=tumor)) + 
+  ggtitle(
+    label = "Microbiome vs number of individuals with tumors",
+    subtitle = sprintf("Fisher's exact p-value: %s", round(test$p.value, 3))
+  )
+```
+
+## Wilcox test
+```{r, echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+test <- wilcox.test(
+  tumor_count[tumor_count$microbiome =="C13","count",drop=TRUE],
+  tumor_count[tumor_count$microbiome =="C13_UM149","count",drop=TRUE],
+  alternative = "two.sided",
+  exact = FALSE
+)
+
+ggplot(tumor_count, aes(x = microbiome, y = count, fill = microbiome)) +
+  geom_boxplot(alpha = .25) + 
+  geom_dotplot(binaxis = "y",
+               stackdir = "center",
+               dotsize = 0.5) + 
+  xlab("Microbiome") + 
+  ylab("Tumor Count") + 
+  ggtitle(
+    label = "Microbiome vs tumor counts per individual",
+    subtitle = sprintf("Wilcox test p-value: %s", round(test$p.value, 3))
+  )
+```
+

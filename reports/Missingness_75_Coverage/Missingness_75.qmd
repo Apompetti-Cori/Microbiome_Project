@@ -1,0 +1,167 @@
+---
+title: "Missingness 75% Coverage"
+author: Anthony Pompetti
+date: "2023-04-10"
+date-format: long
+format: 
+    html: 
+        theme: darkly
+        embed-resources: true
+highlight-style: arrow-dark
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, echo=FALSE, cache=TRUE, cache.lazy=FALSE}
+#| caption: "Loading libraries"
+#| output: false
+#| warning: false
+source(here::here("scripts", "01_data_preprocessing.R"))
+h5file <- here("results","h5","rrbs_combine","meth_raw_filter_75.h5")
+meth_raw_filter <- HDF5Array::HDF5Array(filepath = h5file, name = "meth")
+rrbs_combine <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_combine"))
+meth_raw <- getMeth(rrbs_combine, type = "raw")
+sample_missing <- DelayedMatrixStats::colSums2(is.na(meth_raw_filter))
+sample_percent_missingness <- sample_missing/nrow(meth_raw_filter)*100
+sample_missing_df <- data.frame(sample_id = colnames(meth_raw_filter),
+                                sample_missing = sample_missing,
+                                sample_percent_missingness = sample_percent_missingness)
+
+cpg_missing <- DelayedMatrixStats::rowSums2(is.na(meth_raw_filter))
+```
+## The data listed below reflect the methylation matrix after filtering for:
+
+-   Filtered for coverage (loci kept if at least 75% of the samples had
+    coverage greater than or equal to 10). This filter was applied using only 
+    the GFWT samples (excluding liv_4402) since the Organoid samples don't have great coverage.
+-   Filtered for variance (row variance calculated, ordered rows by
+    decreasing variance, kept top 50%)
+
+```{r, echo=FALSE}
+nafilter <- sample_missing >= nrow(meth_raw_filter)*.90
+message("samples with greater than 90% NA's: \n", paste(colnames(meth_raw_filter)[nafilter], " \n"))
+
+nafilter <- sample_missing >= nrow(meth_raw_filter)*.75
+message("samples with greater than 75% NA's: \n", paste(colnames(meth_raw_filter)[nafilter], " \n"))
+
+nafilter <- sample_missing >= nrow(meth_raw_filter)*.50
+message("samples with greater than 50% NA's: \n", paste(colnames(meth_raw_filter)[nafilter], " \n"))
+```
+
+
+## Number of CpGs in entire matrix:
+
+```{r, cache=TRUE, echo=FALSE}
+nrow(meth_raw_filter)
+```
+
+## Complete cases in entire matrix:
+```{r, cache=TRUE, echo=FALSE}
+complete.cases.sum.delayed(meth_raw_filter, "row")
+```
+
+## Complete cases in matrix without liv_4402:
+```{r, cache=TRUE, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(sample_id != "liv_4402") %>% rownames()
+complete.cases.sum.delayed(meth_raw_filter[,samples], "row")
+```
+
+## Complete cases without organoid samples and without liv_4402:
+```{r, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(batch != "Organoid" & sample_id != "liv_4402") %>% rownames()
+complete.cases.sum.delayed(meth_raw_filter[,samples], "row")
+```
+
+## Complete cases in organoid samples:
+```{r, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(batch == "Organoid") %>% rownames()
+complete.cases.sum.delayed(meth_raw_filter[,samples], "row")
+```
+
+## Complete cases by organ without organoids and liv_4402:
+```{r, echo=FALSE}
+colon <- sample_table_gfwt %>% filter(organ %in% c("DCOL","PCOL","COL")) %>% rownames()
+liver <- sample_table_gfwt %>% filter(organ %in% c("LIV") & sample_id != "liv_4402") %>% rownames()
+spleen <- sample_table_gfwt %>% filter(organ %in% c("SPL")) %>% rownames()
+si <- sample_table_gfwt %>% filter(organ %in% c("LSI","USI")) %>% rownames()
+organs <- list(colon,liver,spleen,si)
+organs_cc <- c()
+for(i in organs){
+  organs_cc <- append(organs_cc, complete.cases.sum.delayed(meth_raw_filter[,i], dim = "row"))
+}
+organs_cc_df <- data.frame(organs = c("colon","liver","spleen","si"), organs_cc)
+
+ggplot(data = organs_cc_df, aes(x = organs, y = organs_cc)) + 
+  geom_bar(stat = "identity") +
+  scale_y_continuous(labels = scales::label_comma())
+```
+
+## % missingness per sample:
+```{r, echo=FALSE}
+p <- ggplot(data = sample_missing_df, aes(x = sample_id, y = sample_percent_missingness)) + geom_bar(stat = "identity") + easy_rotate_labels()
+ggplotly(p)
+```
+
+## % missingness of entire matrix:
+
+```{r, cache=TRUE, echo=FALSE}
+sum(is.na(meth_raw_filter))/length(meth_raw_filter) * 100
+```
+
+## % missingness of matrix without organoids and liv_4402:
+
+```{r, cache=TRUE, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(batch != "Organoid" & sample_id != "liv_4402") %>% rownames()
+sum(is.na(meth_raw_filter[,samples]))/length(meth_raw_filter[,samples]) * 100
+```
+
+## % missingness of matrix with only organoids:
+
+```{r, cache=TRUE, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(batch == "Organoid") %>% rownames()
+sum(is.na(meth_raw_filter[,samples]))/length(meth_raw_filter[,samples]) * 100
+```
+
+## When calculating missingness per sample (entire matrix),
+
+```{r, echo=FALSE}
+quantile(sample_missing)
+```
+
+## When calculating missingness per sample (without organoids and liv_4402),
+
+```{r, echo=FALSE}
+samples <- sample_table_rrbs %>% filter(batch != "Organoid" & sample_id != "liv_4402") %>% rownames()
+quantile(sample_missing[samples])
+```
+
+## Distribution of missingness by samples
+
+```{r, echo=FALSE}
+hist(sample_missing,col = 'skyblue', main = '')
+```
+
+## Box plot of missingness by sample
+
+```{r, echo=FALSE}
+boxplot(sample_missing, col = 'skyblue')
+```
+
+## When calculating missingness per CpG,
+
+```{r, echo=FALSE}
+quantile(cpg_missing)
+```
+
+## Distribution of missingness by CpGs
+
+```{r, echo=FALSE}
+hist(cpg_missing,col = 'skyblue', main = '')
+```
+
+## Box plot of missingness by CpGs
+
+```{r, echo=FALSE}
+boxplot(cpg_missing,col = 'skyblue')
+```

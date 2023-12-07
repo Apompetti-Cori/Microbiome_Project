@@ -1,0 +1,374 @@
+---
+title: "Research Meeting Report"
+execute:
+  echo: false
+author: Anthony Pompetti
+date: "2023-07-10"
+date-format: long
+cache: true
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+library(ChIPpeakAnno)
+library(glmnet)
+library(caret)
+library(ComplexHeatmap)
+library(circlize)
+library(annotatr)
+library(echarts4r)
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+```{r, include = FALSE, cache=TRUE}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl_strain.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = FALSE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+pca <- PCAtools::pca(meth, colData(se))
+```
+
+::: {style="font-size: 75%;"}
+## Recap of aging sites
+- The method used to select these sites was performing linear regression across all sites with strain added as a covariate.
+  - Saved sites that had an adj p-value of < 0.1 (was 0.05 last talk)
+
+:::
+
+::: {style="font-size: 50%;"}
+## Age shows highest contribution within PC1
+
+```{r}
+pcacorplot(pca = pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+:::
+
+## 
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(meth), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+::: {style="font-size: 75%;"}
+## Trying to suppress strain related differences
+1.
+  - Took age 4 WT samples from spleen (129svev and Lgr5)
+  - Filtered for the sites returned from the age selection methodology
+  - Performed differential methylation between strains
+  - Saved DM sites that had an adjusted p-value < 0.05
+2.
+  - Retrieved WT samples from all ages
+  - Filtered for the sites returned from the age selection methodology
+  - Filtered out strain related sites retrieved from previous step
+  
+:::
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("wt", "gf") & se$sample_id != "liv_4402"]
+#Load granges that correlate with age
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl_strain.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = FALSE)
+#Load granges that correlate with strain
+granges <- readRDS(here("results/rds/20/granges_spl_4.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+pca <- PCAtools::pca(meth, colData(se))
+```
+
+## PCA with strain related sites removed
+```{r}
+pcacorplot(pca = pca, components = 1:10, 
+             metavars = c("age","strain","microbiome"))
+```
+
+## PCA with strain related sites removed
+```{r}
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(meth), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+
+::: {style="font-size: 75%;"}
+## PCA regression on aging sites
+- Ran PCA on WT samples 
+  - Trained a linear model on PC1 since it captures most of the age related differences
+- PCA predict on GF samples using previous PCA
+  - Predicted age of WT and GF samples using previous linear models
+  - Plotted predictions vs actual
+- Performed the same steps on GF samples
+
+:::
+
+
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("gf","wt") & se$sample_id != "liv_4402"]
+
+#Load granges that correlate with age
+granges <- readRDS(here("results/rds/18_lm_across_sites/granges_spl_strain.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = FALSE)
+#Load granges that correlate with strain
+granges <- readRDS(here("results/rds/20/granges_spl_4.rds"))
+se <- IRanges::subsetByOverlaps(se, granges, invert = TRUE)
+
+meth <- getMeth(se, type = "raw") %>% as.matrix()
+
+#Run pca on the data you want to train the model on
+pca <- prcomp(t(meth[,se$microbiome == "wt"]))
+perc_var <- round(pca$sdev^2 / sum(pca$sdev^2) * 100, 1)
+
+#Create the training set
+train <- data.frame(cbind(pca$x, colData(se[,se$microbiome == "wt"])[,c("age", "microbiome", "strain"),drop=FALSE]))
+
+#Fit the model on the training set
+mod <- lm(age~PC1,data = train)
+
+#Create the set you wish to perform predictions on
+new <- t(meth[,se$microbiome == "gf"])
+
+#Predict the new data using the pca from before
+pred.prcomp <- predict(pca, newdata = new) %>% as.data.frame()
+pred_df <- data.frame(cbind(pred.prcomp, colData(se[,se$microbiome == "gf"])[,c("age", "microbiome", "strain"),drop=FALSE]))
+
+# Combine the training and testing into a single table for plotting
+comb_dt <- data.table::rbindlist(list(Training=train, Test=pred_df), idcol="Set")
+
+#Use the pca predictions to predict age
+pred.lm.new <- predict(mod, newdata = pred.prcomp)
+
+pred.lm.train <- predict(mod, newdata = train)
+
+#Get the actual values
+actual.gf <- colData(se[,se$microbiome == "gf"])[,"age"]
+
+actual.wt <- colData(se[,se$microbiome == "wt"])[,"age"]
+
+#Bind pred and actual
+delta.new <- cbind(pred.lm.new, actual.gf)
+delta.new <- cbind(delta.new, rep("gf", nrow(delta.new)))
+colnames(delta.new) <- c("pred", "actual", "microbiome")
+
+
+delta.train <- cbind(pred.lm.train, actual.wt)
+delta.train <- cbind(delta.train, rep("wt", nrow(delta.train)))
+colnames(delta.train) <- c("pred", "actual", "microbiome")
+
+delta <- data.frame(rbind(delta.new,delta.train)) %>% 
+  mutate(pred = as.numeric(pred), actual = as.numeric(actual))
+
+#Plot delta age
+p1 <- ggplot(data = delta, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+::: {style="font-size: 75%;"}
+## PCA of training samples (WT) 
+```{r}
+# Plot the PCA biplot
+p <- ggplot(train, aes(PC1, PC2, color = age, shape = strain)) +
+  geom_point(size = 3) +
+  scale_color_viridis_c() +
+  labs(title = "PCA of training samples",
+       x = paste0("PC1: ", perc_var[1], "%"),
+       y = paste0("PC1: ", perc_var[2], "%")
+       ) + coriell::theme_coriell()
+
+#ggplotly(p)
+
+pca3d(train, color = train$age, shape = train$strain, perc_var = perc_var)
+```
+:::
+
+::: {style="font-size: 75%;"}
+## PCA of test data projected onto training data (GF & WT) 
+```{r}
+# Show the Testing data projected onto the Training data
+p <- ggplot(comb_dt, aes(PC1, PC2, color = age, shape = interaction(Set, strain, microbiome))) +
+  geom_point() +
+  scale_color_viridis_c() +
+  labs(
+    title = "PCA of training and test data ",
+    x = paste0("PC1: ", perc_var[1], "%"),
+    y = paste0("PC1: ", perc_var[2], "%")
+    ) + coriell::theme_coriell()
+
+#ggplotly(p)
+
+pca3d(comb_dt, color = comb_dt$age, shape = interaction(comb_dt$Set,comb_dt$strain,comb_dt$microbiome), perc_var = perc_var)
+```
+:::
+
+```{r}
+#Run pca on the data you want to train the model on
+pca <- prcomp(t(meth[,se$microbiome == "gf"]))
+
+#Create the training set
+train <- data.frame(cbind(pca$x, colData(se[,se$microbiome == "gf"])[,c("age","microbiome","strain"),drop=FALSE]))
+
+#Fit the model on the training set
+mod <- lm(age~PC1,data = train)
+
+#Create the set you wish to perform predictions on
+new <- t(meth[,se$microbiome == "wt"])
+
+#Predict the new data using the pca from before
+pred.prcomp <- predict(pca, newdata = new) %>% as.data.frame()
+pred_df <- data.frame(cbind(pred.prcomp, colData(se[,se$microbiome == "wt"])[,c("age","microbiome","strain"),drop=FALSE]))
+
+# Combine the training and testing into a single table for plotting
+comb_dt <- data.table::rbindlist(list(Training=train, Test=pred_df), idcol="Set")
+
+#Use the pca predictions to predict age
+pred.lm.new <- predict(mod, newdata = pred.prcomp)
+
+pred.lm.train <- predict(mod, newdata = train)
+
+#Get the actual values
+actual.gf <- colData(se[,se$microbiome == "gf"])[,"age"]
+
+actual.wt <- colData(se[,se$microbiome == "wt"])[,"age"]
+
+#Bind pred and actual
+delta.new <- cbind(pred.lm.new, actual.wt)
+delta.new <- cbind(delta.new, rep("wt", nrow(delta.new)))
+colnames(delta.new) <- c("pred", "actual", "microbiome")
+
+delta.train <- cbind(pred.lm.train, actual.gf)
+delta.train <- cbind(delta.train, rep("gf", nrow(delta.train)))
+colnames(delta.train) <- c("pred", "actual", "microbiome")
+
+delta <- data.frame(rbind(delta.new,delta.train)) %>% 
+  mutate(pred = as.numeric(pred), actual = as.numeric(actual))
+
+#Plot delta age
+p2 <- ggplot(data = delta, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+::: {style="font-size: 75%;"}
+## PCA of training samples (GF) 
+```{r}
+# Plot the PCA biplot
+p <- ggplot(train, aes(PC1, PC2, color = age, shape = strain)) +
+  geom_point(size = 3) +
+  scale_color_viridis_c() +
+  labs(title = "PCA of training samples",
+       x = paste0("PC1: ", perc_var[1], "%"),
+       y = paste0("PC1: ", perc_var[2], "%")
+       ) + coriell::theme_coriell()
+
+#ggplotly(p)
+
+pca3d(train, color = train$age, shape = train$strain, perc_var = perc_var)
+```
+:::
+
+::: {style="font-size: 75%;"}
+## PCA of test data projected onto training data (WT & GF) 
+```{r}
+# Show the Testing data projected onto the Training data
+p <- ggplot(comb_dt, aes(PC1, PC2, color = age, shape = interaction(Set, strain, microbiome))) +
+  geom_point() +
+  scale_color_viridis_c() +
+  labs(
+    title = "PCA of training and test data ",
+    x = paste0("PC1: ", perc_var[1], "%"),
+    y = paste0("PC1: ", perc_var[2], "%")
+    ) + coriell::theme_coriell()
+
+#ggplotly(p)
+
+pca3d(comb_dt, color = comb_dt$age, shape = interaction(comb_dt$Set,comb_dt$strain,comb_dt$microbiome), perc_var = perc_var)
+```
+:::
+
+::: {style="font-size: 75%;"}
+## PCA Regression Results
+```{r}
+p <- subplot(p1 %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = FALSE),
+        p2 %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = TRUE),
+        nrows = 1, shareX = TRUE, shareY = TRUE, margin = .05)
+
+p$x$data[[1]]$showlegend = FALSE
+p$x$data[[2]]$showlegend = FALSE
+
+p
+```
+:::
+
+## Testing Strain normalization in other tissues
+```{r}
+#Select gf/wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "COL" & se$microbiome %in% c("wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "cgi", progressbar = FALSE)
+
+
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 12, nblocks = 6)
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+
+plot_ly(data = pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+        width = 1000, height = 700,
+        color = pca$metadata$age,
+        text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(title = paste("PCA using", nrow(meth), "sites"),
+             scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+

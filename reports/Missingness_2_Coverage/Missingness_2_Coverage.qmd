@@ -1,0 +1,83 @@
+---
+title: "Missingness 2 Coverage"
+author: Anthony Pompetti
+date: "2023-04-10"
+date-format: long
+cache: true
+format: 
+    html: 
+        theme: darkly
+        embed-resources: true
+highlight-style: arrow-dark
+---
+
+```{r setup, echo=FALSE, cache=TRUE, cache.lazy=FALSE}
+#| caption: "Loading libraries"
+#| output: false
+#| warning: false
+source(here::here("scripts", "01_data_preprocessing.R"))
+meth_raw_filter_75 <- readRDS(here("results","rds","meth_raw_filter_2.rds"))
+sample_missing <- DelayedMatrixStats::colSums2(is.na(meth_raw_filter_75))
+cpg_missing <- DelayedMatrixStats::rowSums2(is.na(meth_raw_filter_75))
+```
+## The data listed below reflect the methylation matrix after filtering for:
+
+-   Filtered for coverage (loci kept if at least 2 samples had coverage
+    \> 10)
+-   Filtered for variance (row variance calculated, ordered rows by
+    decreasing variance, kept top 50%)
+-   Filtered samples that had \> 90% NA's (liv_4402)
+
+## Number of CpGs in entire matrix:
+
+```{r, cache=TRUE, echo=FALSE}
+nrow(meth_raw_filter_75)
+```
+
+## Complete cases in matrix:
+
+```{r, cache=TRUE, echo=FALSE}
+nrow(meth_raw_filter_75) - sum(DelayedMatrixStats::rowAnyNAs(meth_raw_filter_75))
+```
+
+## % missingness of entire matrix:
+
+```{r, cache=TRUE, echo=FALSE}
+sum(is.na(meth_raw_filter_75))/length(meth_raw_filter_75) * 100
+```
+
+## When calculating missingness per sample,
+
+```{r, echo=FALSE}
+quantile(sample_missing)
+```
+
+## Distribution of missingness by samples
+
+```{r, echo=FALSE}
+hist(sample_missing,col = 'skyblue', main = '')
+```
+
+## Box plot of missingness by sample
+
+```{r, echo=FALSE}
+boxplot(sample_missing, col = 'skyblue')
+```
+
+## When calculating missingness per CpG,
+
+```{r, echo=FALSE}
+quantile(cpg_missing)
+```
+
+## Distribution of missingness by CpGs
+
+```{r, echo=FALSE}
+hist(cpg_missing,col = 'skyblue', main = '')
+```
+
+## Box plot of missingness by CpGs
+
+```{r, echo=FALSE}
+boxplot(cpg_missing,col = 'skyblue')
+```

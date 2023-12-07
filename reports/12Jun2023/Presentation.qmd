@@ -1,0 +1,592 @@
+---
+title: "Research Meeting Report"
+author: Anthony Pompetti
+date: "2023-06-12"
+date-format: long
+cache: true
+format: 
+  revealjs:
+    theme: simple
+    logo: ../Coriell_Logo.png
+    embed-resources: true
+---
+
+```{r setup, echo=FALSE, include=FALSE, cache=TRUE}
+library(glmnet)
+library(caret)
+library(ComplexHeatmap)
+library(circlize)
+library(annotatr)
+source(here::here("scripts", "01_data_preprocessing.R"))
+```
+
+```{r, cache=TRUE, echo=FALSE, include=FALSE}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+age_sites <- readRDS(here("results/rds/age_sites.rds"))
+
+#filter for liver samples
+se <- se[,se$organ == "LIV" & 
+           se$microbiome %in% c("gf", "wt") &
+           se$sample_id != "liv_4402"]
+
+#filter for aging sites
+se <- subsetByOverlaps(se, age_sites)
+
+#filter for coverage/variance
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+#realize meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 6, nblocks = 3)
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+meth_cgi <- meth
+
+#get only the wt samples 
+meth_wt <- t(meth[,se$microbiome == "wt"])
+#get only the gf samples
+meth_gf <- t(meth[,se$microbiome == "gf"])
+
+age_wt <- colData(se[,se$microbiome == "wt"])$age
+age_gf <- colData(se[,se$microbiome == "gf"])$age
+```
+
+## Data Filter Summary
+
+-   Data was filtered for WT and GF samples derived from Liver samples
+    -   Selected CpGs belonging to the aging sites provided by Himani
+    -   Selected All CpGs
+    -   Filtered for coverage and variance
+
+::: {style="font-size: 50%;"}
+## Aging in liver using Himani's aging selected cpgs
+
+```{r, echo=FALSE}
+pca <- PCAtools::pca(meth, metadata = colData(se))
+plotly::plot_ly(pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3, 
+                color = pca$metadata$age,
+                width = 1000, height = 700, text = paste(rownames(pca$metadata), pca$metadata$microbiome, pca$metadata$strain, pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      )) %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in liver using Himani's aging selected cpgs
+
+```{r,echo=FALSE}
+PCAtools::eigencorplot(pcaobj = pca, metavars = c("strain", "microbiome", "age"), components = getComponents(pca, components = 1:10), plotRsquared = TRUE)
+```
+:::
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(123)
+lambda_seq <- 10^seq(2, -2, by = -.1)
+#fit on wt
+fit <- glmnet::cv.glmnet(meth_wt, age_wt, alpha = 0)
+
+#predict wt age using fit that was trained on wt
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on wt
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt),rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_wt_liv <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+
+p_wt_liv <- ggplotly(p_wt_liv)
+```
+
+```{r, echo=FALSE, include=FALSE}
+#fit on gf
+fit <- glmnet::cv.glmnet(meth_gf, age_gf, alpha = 0)
+
+#predict wt age using fit that was trained on gf
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on gf
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt), rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_gf_liv <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+
+p_gf_liv <- ggplotly(p_gf_liv)
+```
+
+```{r, cache=TRUE, echo=FALSE, include=FALSE}
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+age_sites <- readRDS(here("results/rds/age_sites.rds"))
+
+#filter for spleen samples
+se <- se[,se$organ == "SPL" & 
+           se$microbiome %in% c("gf", "wt")]
+
+#filter for aging sites
+se <- subsetByOverlaps(se, age_sites)
+
+#filter for coverage/variance
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+#realize meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 6, nblocks = 3)
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+meth_cgi <- meth
+
+#get only the wt samples 
+meth_wt <- t(meth[,se$microbiome == "wt"])
+#get only the gf samples
+meth_gf <- t(meth[,se$microbiome == "gf"])
+
+age_wt <- colData(se[,se$microbiome == "wt"])$age
+age_gf <- colData(se[,se$microbiome == "gf"])$age
+```
+
+## Data Filter Summary
+
+-   Data was filtered for WT and GF samples derived from Spleen samples
+    -   Selected CpGs belonging to the aging sites provided by Himani
+    -   Selected All CpGs
+    -   Filtered for coverage and variance
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using Himani's aging selected cpgs
+
+```{r,echo=FALSE}
+pca <- PCAtools::pca(meth, metadata = colData(se))
+plotly::plot_ly(pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3, 
+                color = pca$metadata$age,
+                width = 1000, height = 700, text = paste(rownames(pca$metadata), pca$metadata$microbiome, pca$metadata$strain, pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      )) %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using Himani's aging selected cpgs
+
+```{r,echo=FALSE}
+PCAtools::eigencorplot(pcaobj = pca, metavars = c("strain", "microbiome", "age"), components = getComponents(pca, components = 1:10), plotRsquared = TRUE)
+```
+:::
+
+```{r, echo=FALSE, include=FALSE}
+set.seed(123)
+lambda_seq <- 10^seq(2, -2, by = -.1)
+#fit on wt
+fit <- glmnet::cv.glmnet(meth_wt, age_wt, alpha = 0)
+
+#predict wt age using fit that was trained on wt
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on wt
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt),rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_wt_spl <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + 
+  geom_smooth(method = lm) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+```{r, echo=FALSE, include=FALSE}
+#fit on gf
+fit <- glmnet::cv.glmnet(meth_gf, age_gf, alpha = 0)
+
+#predict wt age using fit that was trained on gf
+pred_wt <- predict(fit, newx = meth_wt, s = fit$lambda.min) %>% as.double()
+#predict gf age using fit that was trained on gf
+pred_gf <- predict(fit, newx = meth_gf, s = fit$lambda.min) %>% as.double()
+
+#create dataframe of actual and predictions
+df <- data.frame(actual = c(age_wt,age_gf), 
+               pred = c(pred_wt,pred_gf),
+               row.names = c(rownames(meth_wt), rownames(meth_gf)))
+
+df <- merge(df, colData(se)[,c("microbiome", "strain", 
+                               "batch", "suborgan", "sampletype")], by = "row.names") %>% 
+  as.data.frame() %>% 
+  column_to_rownames("Row.names")
+
+#plot predictions from wt fit
+p_gf_spl <- ggplot(data = df, 
+            mapping = aes(x = actual, y = pred, color = microbiome)) +
+  geom_point() +
+  labs(x = "Actual Age", y = "Predicted Age") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red", show.legend = FALSE) + 
+  geom_smooth(method = lm, show.legend = FALSE) +
+  ggpubr::stat_regline_equation(label.y = c(30, 35), label.x = 10, show.legend = FALSE, output.type = "text")
+```
+
+## 
+
+```{r, echo=FALSE}
+p <- subplot(p_wt_liv %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = FALSE),
+        p_gf_liv %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = FALSE),
+        p_wt_spl %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = FALSE),
+        p_gf_spl %>% ggplotly(height = 700, width = 1000) %>% layout(showlegend = TRUE),
+        nrows = 2, shareX = TRUE, shareY = TRUE, margin = .05)
+
+p$x$data[[1]]$showlegend = FALSE
+p$x$data[[2]]$showlegend = FALSE
+p$x$data[[10]]$showlegend = FALSE
+p$x$data[[11]]$showlegend = FALSE
+p$x$data[[19]]$showlegend = FALSE
+p$x$data[[20]]$showlegend = FALSE
+
+annotations = list( 
+  list( 
+    x = 0.2,  
+    y = 1.0,  
+    text = "Liver Fit on WT",  
+    xref = "paper",  
+    yref = "paper",  
+    xanchor = "center",  
+    yanchor = "bottom",  
+    showarrow = FALSE 
+  ),  
+  list( 
+    x = 0.8,  
+    y = 1,  
+    text = "Liver Fit on GF",  
+    xref = "paper",  
+    yref = "paper",  
+    xanchor = "center",  
+    yanchor = "bottom",  
+    showarrow = FALSE 
+  ),  
+  list( 
+    x = 0.2,  
+    y = 0.45,  
+    text = "Spleen Fit on WT",  
+    xref = "paper",  
+    yref = "paper",  
+    xanchor = "center",  
+    yanchor = "bottom",  
+    showarrow = FALSE 
+  ),
+  list( 
+    x = 0.8,  
+    y = 0.45,  
+    text = "Spleen Fit on GF",  
+    xref = "paper",  
+    yref = "paper",  
+    xanchor = "center",  
+    yanchor = "bottom",  
+    showarrow = FALSE 
+  ))
+
+p %>% layout(annotations = annotations)
+```
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using LASSO (x1) selected cpgs
+
+```{r,echo=FALSE}
+#Select wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[, se$organ == "SPL" & se$microbiome %in% c("wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+#Filter SE for NA's in meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 12, nblocks = 6)
+se <- se[!matrixStats::rowAnyNAs(meth),]
+
+#Get resulting meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 12, nblocks = 6)
+meth <- t(meth)
+
+#Get actual age of samples
+age <- colData(se)[,"age"]
+
+meth_age <- cbind(age,meth)
+
+fit <- glmnet::cv.glmnet(x = meth_age[,-1], y = meth_age[,1], alpha = 1)
+
+lasso_granges <- se[which(coef(fit) > 0),] %>% granges()
+
+#Select wt and gf microbiome samples
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[, se$organ == "SPL" & se$sample_id != "liv_4402"]
+
+se <-  IRanges::subsetByOverlaps(se, lasso_granges)
+
+meth <- getMeth(se, type = "raw")
+meth <- as.matrix(meth)
+
+meth <- block.impute.row_mean(meth)
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+
+plotly::plot_ly(pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3, 
+                color = pca$metadata$age,
+                width = 1000, height = 700, text = paste(rownames(pca$metadata), pca$metadata$microbiome, pca$metadata$strain, pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      )) %>%
+  add_markers(
+    symbol =  interaction(pca$metadata$microbiome, pca$metadata$strain, sep = "-"), 
+    symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x")
+    )
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using LASSO (x1) selected cpgs
+
+```{r,echo=FALSE}
+PCAtools::eigencorplot(pcaobj = pca, metavars = c("strain", "microbiome", "age"), components = getComponents(pca), plotRsquared = TRUE)
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Bootstrapping LASSO Results
+
+```{r, echo=FALSE}
+boot_results <- readRDS(here("results/rds/boot_results_spl.rds"))
+boots <- unlist(boot_results)
+
+
+m <- matrix(nrow = 1000, ncol = length(unique(boots)))
+colnames(m) <- unique(boots)
+
+for(boot in 1:length(boot_results)){
+  for(result in unlist(boot_results[boot])){
+    m[boot,as.character(result)] <- 1
+  }
+}
+
+m[is.na(m)] <- 0
+
+ComplexHeatmap::Heatmap(m, name = "mat", col = colorRamp2(c(0, 0.5, 1), c('dodgerblue4', 'snow', 'gold')), show_column_names = FALSE)
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Frequencies of CpGs Occuring within LASSO after 1000 bootstraps
+
+```{r, echo=FALSE}
+boot_table <- table(boots)/1000
+d <- data.frame(boot_table)
+quantiles <- quantile(d$Freq, seq(.5, 1, 0.05))
+cat("Total CpGs returned from bootstraps:", length(boot_table), "\n\n")
+quantiles
+cpgs_0 <- boot_table %>% names() %>% as.numeric()
+cpgs_90 <- boot_table[boot_table > 0.005] %>% names() %>% as.numeric()
+barplot(boot_table)
+```
+:::
+
+```{r, echo=FALSE}
+#Select wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SPL" & se$microbiome %in% c("wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+#Filter SE for NA's in meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 12, nblocks = 6)
+se <- se[!matrixStats::rowAnyNAs(meth),]
+
+#Get granges of the cpgs (MUST use the se used in the boostrapping)
+granges_0 <- se[cpgs_0,] %>% granges()
+granges_90 <- se[cpgs_90,] %>% granges()
+
+#Select wt and gf microbiome samples
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[, se$organ == "SPL" & se$sample_id != "liv_4402"]
+
+se_0 <- IRanges::subsetByOverlaps(se, granges_0)
+se_90 <- IRanges::subsetByOverlaps(se, granges_90)
+```
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using all cpgs returned from bootstrapping
+
+```{r, echo=FALSE}
+#Get resulting meth matrix
+meth <- getMeth(se_0, type = "raw")
+meth <- as.matrix(meth)
+
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+cat("CpGs used in PCA: ", nrow(meth))
+plotly::plot_ly(pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3, 
+                color = pca$metadata$age,
+                symbols = c("circle", "square"),
+                width = 1000, height = 700, text = paste(rownames(pca$metadata), pca$metadata$microbiome, pca$metadata$strain, pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using all cpgs returned from bootstrapping
+
+```{r,echo=FALSE}
+PCAtools::eigencorplot(pcaobj = pca, metavars = c("strain", "microbiome", "age"), components = getComponents(pca, components = 1:10), plotRsquared = TRUE)
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using cpgs that fall within 90th percentile
+
+```{r, echo=FALSE}
+#Get resulting meth matrix
+meth <- getMeth(se_90, type = "raw")
+meth <- as.matrix(meth)
+
+meth <- meth[!matrixStats::rowAnyNAs(meth),]
+
+pca <- PCAtools::pca(meth, metadata = colData(se))
+cat("CpGs used in PCA: ", nrow(meth))
+plotly::plot_ly(pca$rotated, x = ~PC1, y = ~PC2, z = ~PC3,
+                width = 1000, height = 700,
+                color = pca$metadata$age,
+                text = paste(rownames(pca$metadata),                                                
+                             pca$metadata$microbiome,
+                             pca$metadata$strain,
+                             pca$metadata$age)) %>%
+      layout(scene = list(
+        xaxis = list(title = paste("PC1", " ", round(pca$variance[["PC1"]],2), "%", sep = "")),
+        yaxis = list(title = paste("PC2", " ", round(pca$variance[["PC2"]],2), "%", sep = "")),
+        zaxis = list(title = paste("PC3", " ", round(pca$variance[["PC3"]],2), "%", sep = ""))
+      ))  %>%
+  add_markers(symbol =  interaction(pca$metadata$strain, pca$metadata$microbiome, sep = "-"), 
+              symbols = c( "circle", "square", "diamond", "cross", "circle-open", "square-open", "diamond-open", "x"))
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Aging in spleen using cpgs that fall within 90% quantile
+
+```{r,echo=FALSE}
+PCAtools::eigencorplot(pcaobj = pca, metavars = c("strain", "microbiome", "age"), components = getComponents(pca, components = 1:10), plotRsquared = TRUE)
+```
+:::
+
+## Comparing this method to Himani's method
+
+-   I performed a similar method this time using elastic net with an alpha of .8
+    -   Using only SI samples, filtered for coverage/variance
+    -   Bootstrapped elastic net 1000 times
+
+::: {style="font-size: 50%;"}
+## Bootstrapping LASSO Results for SI
+
+```{r, echo=FALSE}
+boot_results <- readRDS(here("results/rds/boot_results_si.rds"))
+boots <- unlist(boot_results)
+
+m <- matrix(nrow = 1000, ncol = length(unique(boots)))
+colnames(m) <- unique(boots)
+
+for(boot in 1:length(boot_results)){
+  for(result in unlist(boot_results[boot])){
+    m[boot,as.character(result)] <- 1
+  }
+}
+
+m[is.na(m)] <- 0
+
+ComplexHeatmap::Heatmap(m, name = "mat", col = colorRamp2(c(0, 0.5, 1), c('dodgerblue4', 'snow', 'gold')), show_column_names = FALSE)
+```
+:::
+
+::: {style="font-size: 50%;"}
+## Frequencies of CpGs Occuring within LASSO after 1000 bootstraps
+
+```{r, echo=FALSE}
+boot_table <- table(boots)/1000
+d <- data.frame(boot_table)
+quantiles <- quantile(d$Freq, seq(.5, 1, 0.05))
+cat("Total CpGs returned from bootstraps:", length(boot_table), "\n\n")
+quantiles
+cpgs_0 <- boot_table %>% names() %>% as.numeric()
+barplot(boot_table)
+```
+:::
+
+## Comparing overlap of sites returned from bootstrap and Himani's sites
+
+```{r, echo=FALSE}
+#Select wt microbiome samples and perform cov/var filter
+se <- HDF5Array::loadHDF5SummarizedExperiment(dir = here("results","h5","rrbs_gfwt"), prefix = "update")
+se <- se[,se$organ == "SI" & se$microbiome %in% c("wt") & se$sample_id != "liv_4402"]
+se <- filter_rrbs(se, nblocks = 20, cores = 40, cpg_select = "all", progressbar = FALSE)
+
+#Filter SE for NA's in meth matrix
+meth <- getMeth(se, type = "raw")
+meth <- realize_Parallel(meth, cores = 12, nblocks = 6)
+se <- se[!matrixStats::rowAnyNAs(meth),]
+
+#Get granges of the cpgs (MUST use the se used in the boostrapping)
+granges_0 <- se[cpgs_0,] %>% granges()
+
+age_sites <- readRDS(here("results/rds/age_sites.rds"))
+
+GenomicRanges::findOverlaps(age_sites, granges_0)
+```

@@ -1,0 +1,13 @@
+#ignore these
+*
+!*/
+
+#track these
+!.gitignore
+!.here
+!reports/*/*.qmd
+!src/*/*.R
+!src/*.R
+!scripts/*/*.R
+!scripts/*.R
+!*.Rproj
