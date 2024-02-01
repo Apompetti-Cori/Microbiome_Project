@@ -55,7 +55,7 @@ transcripts <- subset(gtf, gene_type == "protein_coding" & type == "transcript" 
   dplyr::mutate(type = "transcript") %>%
   GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = T)
 
-tx_promoters <- promoters(transcripts) %>% 
+tx_promoters <- promoters(transcripts, upstream = 500, downstream = 500) %>% 
   data.frame %>%
   mutate(id = "promoter",
          type = "transcript") %>%
@@ -69,7 +69,7 @@ genes <- subset(gtf, gene_type == "protein_coding" & type == "gene" & !startsWit
   GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = TRUE)
 
 #Get promoters of gtf file for annotating cpgs
-promoters <- promoters(genes) %>% 
+promoters <- promoters(genes, upstream = 500, downstream = 500) %>% 
   data.frame %>%
   mutate(id = "promoter",
          type = "gene") %>%

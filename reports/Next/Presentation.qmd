@@ -37,7 +37,6 @@ pj_normal <- HDF5Array::loadHDF5SummarizedExperiment(here::here("data/se/rrbs/")
 rnaseq <- readRDS(here::here("data/se/ProxDistRNAseq/isee.rds"))
 contrasts <- readRDS(here::here("results/Microbiome_Tumor_Proj/03/contrasts.rds"))
 dm_results <- readRDS(here::here("results/Microbiome_Tumor_Proj/03/dm_results.rds"))
-dge <- readRDS(here::here("results/Microbiome_Tumor_Proj/06/PvD_dge.rds"))
 ```
 
 ```{css cssFormat, echo=FALSE, include=FALSE}

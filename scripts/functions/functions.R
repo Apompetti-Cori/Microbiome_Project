@@ -445,7 +445,7 @@ filter_rrbs <- function(se, percent_coverage = .66, min_coverage = 10,
     se <- se
   }
   
-  cov <- bsseq::getCoverage(se[,eval(parse(text=ignore_samples))], type = "Cov")
+  cov <- assay(se[,eval(parse(text=ignore_samples))], "Cov")
   
   message("filtering loci for coverage...")
   message("filtering on ", ncol(se[,eval(parse(text=ignore_samples))]), " samples...")

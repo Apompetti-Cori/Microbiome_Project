@@ -2,11 +2,11 @@ library(here)
 source(here::here("scripts", "01_data_preprocessing.R"))
 
 #Load summarized experiment
-pj_normal <- HDF5Array::loadHDF5SummarizedExperiment(here::here("data/se/rrbs"), prefix = "pj_normal")
+pj_normal <- HDF5Array::loadHDF5SummarizedExperiment(here::here("data/se/rrbs"), prefix = "isee_filter_side")
 meth <- assay(pj_normal, "Meth") %>% realize_Parallel(workers = 12, nblocks = 6)
 
 #Load in contrasts
-contrasts <- readRDS(here::here("results/Microbiome_Tumor_Proj/03/contrasts.rds"))
+contrasts <- as.data.frame(mcols(pj_normal))
 
 #PCA ALL
 pca_meth <- meth
@@ -33,7 +33,7 @@ pca_cgi <- PCAtools::pca(
 
 #PCA NO SIDE
 sites <- contrasts %>% 
-  filter(!(gf_by_suborgan | consortium_by_suborgan | spf_by_suborgan | eckp_by_suborgan)) %>%
+  filter(!(gf_by_suborgan | consortium_by_suborgan)) %>%
   pull(chr_base)
 
 pca_meth <- meth[rownames(meth) %in% sites,]

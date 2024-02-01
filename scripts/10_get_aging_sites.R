@@ -23,10 +23,14 @@ aging_sites <- aging %>%
          "width" = 1) %>% 
   makeGRangesFromDataFrame()
 
+
+
 seqlevelsStyle(aging_sites) = "UCSC"
   
-aging_sites <- liftOver(aging_sites, mm9tomm10)
-genome(aging_sites) = "mm10"
-saveRDS(aging_sites, file = here::here("results/rds/10/age_sites.rds"))
-
-
+aging_sites2 <- liftOver(aging_sites, mm9tomm10)
+aging_sites2 <- unlist(aging_sites2)
+aging_sites$chr_base <- paste0("chr",seq(aging_sites),"_",start(aging_sites))
+aging_sites2$chr_base <- paste0("chr",seq(aging_sites2),"_",start(aging_sites2))
+genome(aging_sites2) = "mm10"
+saveRDS(aging_sites2, file = here::here("results/rds/10/age_sites_mm10.rds"))
+saveRDS(aging_sites, file = here::here("results/rds/10/age_sites_mm10.rds"))

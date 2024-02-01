@@ -1,4 +1,6 @@
 message("preprocessing")
+HDF5Array::setHDF5DumpDir(here::here("results","h5","HDF5DumpDir"))
+DelayedArray::setAutoRealizationBackend(BACKEND="HDF5Array")
 suppressPackageStartupMessages({
   library(bsseq)
   library(tidyverse)

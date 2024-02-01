@@ -11,3 +11,4 @@
 !scripts/*/*.R
 !scripts/*.R
 !*.Rproj
+.Rproj.user
