@@ -11,4 +11,10 @@
 !scripts/*/*.R
 !scripts/*.R
 !*.Rproj
+!data/metadata/rrbs_metadata.csv
+!data/metadata/annotated_perm_intestine44_age.tsv
+!data/metadata/gencode.v44.annotation.gtf.gz
+!data/metadata/gencode.vM25.annotation.gtf.gz
+!data/chainfiles/*.gz
 .Rproj.user
+
